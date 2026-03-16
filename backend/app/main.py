@@ -44,7 +44,7 @@ OVERPASS_ENDPOINTS = [
     "https://overpass-api.de/api/interpreter",
 ]
 
-POI_TYPE = Literal["college", "school", "clinic", "postOffice", "restaurant", "pharmacy"]
+POI_TYPE = Literal["college", "school", "clinic", "postOffice", "restaurant", "pharmacy", "kindergarten"]
 
 POI_CONFIG: Dict[str, Dict[str, object]] = {
     "college": {
@@ -63,8 +63,8 @@ POI_CONFIG: Dict[str, Dict[str, object]] = {
         "exclude": [],
     },
     "postOffice": {
-        "overpass_selector": '"amenity"="post_office"',
-        "include": ["poczta"],
+        "overpass_selector": '"amenity"~"^(post_office|post_depot)$"',
+        "include": ["poczta", "pocztowy", "urzad pocztowy", "poczta polska"],
         "exclude": [],
     },
     "restaurant": {
@@ -75,6 +75,11 @@ POI_CONFIG: Dict[str, Dict[str, object]] = {
     "pharmacy": {
         "overpass_selector": '"amenity"="pharmacy"',
         "include": ["apteka"],
+        "exclude": [],
+    },
+    "kindergarten": {
+        "overpass_selector": '"amenity"~"^(kindergarten|childcare)$"',
+        "include": ["przedszkole", "zlobek"],
         "exclude": [],
     },
 }
@@ -612,6 +617,33 @@ def fetch_points(req: PoiFetchRequest) -> Tuple[List[Dict[str, object]], str]:
                 points.append({"name": name, "lat": float(lat), "lng": float(lng)})
             if points:
                 return points, endpoint
+
+            # Some post offices can be tagged inconsistently or placed just outside
+            # dataset-derived city polygons. Retry once with relaxed filters.
+            if req.poiType == "postOffice" and req.polygon:
+                relaxed_points: List[Dict[str, object]] = []
+                relaxed_seen = set()
+                for el in elements:
+                    lat = el.get("lat")
+                    lng = el.get("lon")
+                    if lat is None or lng is None:
+                        center = el.get("center", {})
+                        lat = center.get("lat")
+                        lng = center.get("lon")
+                    if not isinstance(lat, (int, float)) or not isinstance(lng, (int, float)):
+                        continue
+                    tags = el.get("tags", {})
+                    name = str(tags.get("name") or "unknown")
+                    if not apply_name_filter(name, [], exclude):
+                        continue
+                    dedupe_key = f"{normalize_text(name)}|{round(float(lat), 5)}|{round(float(lng), 5)}"
+                    if dedupe_key in relaxed_seen:
+                        continue
+                    relaxed_seen.add(dedupe_key)
+                    relaxed_points.append({"name": name, "lat": float(lat), "lng": float(lng)})
+
+                if relaxed_points:
+                    return relaxed_points, f"{endpoint}#postOffice-relaxed"
         except error.HTTPError:
             continue
         except error.URLError:

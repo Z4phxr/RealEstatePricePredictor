@@ -1,5 +1,5 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react'
-import { MapContainer, TileLayer, CircleMarker, Polygon, Popup, useMapEvents } from 'react-leaflet'
+import { MapContainer, TileLayer, CircleMarker, Polygon, Popup, useMap, useMapEvents } from 'react-leaflet'
 import 'leaflet/dist/leaflet.css'
 
 const UNIVERSITIES_CACHE_KEY = 'universities_by_city_cache_v2'
@@ -8,11 +8,13 @@ const CLINICS_CACHE_KEY = 'clinics_by_city_cache_v1'
 const POST_OFFICES_CACHE_KEY = 'post_offices_by_city_cache_v1'
 const RESTAURANTS_CACHE_KEY = 'restaurants_by_city_cache_v1'
 const PHARMACIES_CACHE_KEY = 'pharmacies_by_city_cache_v1'
+const KINDERGARTENS_CACHE_KEY = 'kindergartens_by_city_cache_v1'
 const UNIVERSITIES_CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 7
 const OVERPASS_DEBUG_LOGS = import.meta.env.VITE_OVERPASS_DEBUG === 'true'
 const OVERPASS_REQUEST_TIMEOUT_MS = 30000
 const OVERPASS_FAILED_CITY_COOLDOWN_MS = 1000 * 60 * 10
 const OVERPASS_PREFETCH_CONCURRENCY = 3
+const APARTMENT_SNAP_DISTANCE_METERS = 180
 
 function logOverpass(level, message, details) {
   if (!OVERPASS_DEBUG_LOGS) return
@@ -93,6 +95,28 @@ function toBoolean(value) {
 function toNullableNumber(value) {
   const n = Number(value)
   return Number.isFinite(n) ? n : null
+}
+
+function roundDistance(value) {
+  return Number.isFinite(value) ? Number(value.toFixed(2)) : null
+}
+
+function normalizePoiCount(value) {
+  return Number.isFinite(value) ? Math.max(0, Math.round(value)) : null
+}
+
+function computePoiAggregate(distances) {
+  const values = distances.filter((v) => Number.isFinite(v))
+  if (!values.length) {
+    return {
+      nearset_poi_distance: null,
+      poi_sum_distance: null
+    }
+  }
+  return {
+    nearset_poi_distance: roundDistance(Math.min(...values)),
+    poi_sum_distance: roundDistance(values.reduce((sum, v) => sum + v, 0))
+  }
 }
 
 function cleanCityName(value) {
@@ -464,6 +488,46 @@ function putCachedPharmacies(city, points) {
   writePharmaciesCache(cache)
 }
 
+function readKindergartensCache() {
+  try {
+    const raw = localStorage.getItem(KINDERGARTENS_CACHE_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return {}
+    return parsed
+  } catch (_error) {
+    return {}
+  }
+}
+
+function writeKindergartensCache(cache) {
+  try {
+    localStorage.setItem(KINDERGARTENS_CACHE_KEY, JSON.stringify(cache))
+  } catch (_error) {
+    // ignore storage write issues
+  }
+}
+
+function getCachedKindergartens(city) {
+  const cache = readKindergartensCache()
+  const item = cache[city]
+  if (!item) return null
+  const isFresh = Number.isFinite(item.updatedAt) && (Date.now() - item.updatedAt) < UNIVERSITIES_CACHE_TTL_MS
+  if (!isFresh || !Array.isArray(item.points)) return null
+  logOverpass('info', `kindergarten cache hit for city=${city}, count=${item.points.length}`)
+  return item.points
+}
+
+function putCachedKindergartens(city, points) {
+  if (!Array.isArray(points) || points.length === 0) return
+  const cache = readKindergartensCache()
+  cache[city] = {
+    points,
+    updatedAt: Date.now()
+  }
+  writeKindergartensCache(cache)
+}
+
 function buildCityGeometry(apartments) {
   const byCity = apartments.reduce((acc, apartment) => {
     const key = normalizeCityName(apartment.city)
@@ -519,6 +583,10 @@ async function fetchPharmaciesForCity(city, cityGeometry, cityPolygon) {
   return fetchPoiFromBackend('pharmacy', city, cityGeometry, cityPolygon)
 }
 
+async function fetchKindergartensForCity(city, cityGeometry, cityPolygon) {
+  return fetchPoiFromBackend('kindergarten', city, cityGeometry, cityPolygon)
+}
+
 function estimateMapFeatures(
   lat,
   lng,
@@ -536,7 +604,9 @@ function estimateMapFeatures(
   restaurantsByCity,
   restaurantsOverride,
   pharmaciesByCity,
-  pharmaciesOverride
+  pharmaciesOverride,
+  kindergartensByCity,
+  kindergartensOverride
 ) {
   const cityKey = normalizeCityName(city)
   const candidates = []
@@ -586,7 +656,7 @@ function estimateMapFeatures(
   const schoolDistanceInterpolated = weightedAverage((row) => row.schoolDistance)
   const clinicDistanceInterpolated = weightedAverage((row) => row.clinicDistance)
   const postOfficeDistanceInterpolated = weightedAverage((row) => row.postOfficeDistance)
-  const kindergartenDistance = weightedAverage((row) => row.kindergartenDistance)
+  const kindergartenDistanceInterpolated = weightedAverage((row) => row.kindergartenDistance)
   const restaurantDistanceInterpolated = weightedAverage((row) => row.restaurantDistance)
   const collegeDistanceInterpolated = weightedAverage((row) => row.collegeDistance)
   const pharmacyDistanceInterpolated = weightedAverage((row) => row.pharmacyDistance)
@@ -670,6 +740,18 @@ function estimateMapFeatures(
   }
   const pharmacyDistance = pharmacyDistanceActual ?? pharmacyDistanceInterpolated
 
+  const kindergartenPoints = kindergartensOverride ?? (kindergartensByCity[cityKey] || [])
+  let kindergartenDistanceActual = null
+  if (kindergartenPoints.length) {
+    for (const kindergarten of kindergartenPoints) {
+      const distanceKm = haversineKm(lat, lng, kindergarten.lat, kindergarten.lng)
+      if (!Number.isFinite(kindergartenDistanceActual) || distanceKm < kindergartenDistanceActual) {
+        kindergartenDistanceActual = distanceKm
+      }
+    }
+  }
+  const kindergartenDistance = kindergartenDistanceActual ?? kindergartenDistanceInterpolated
+
   const poiDistances = [
     schoolDistance,
     clinicDistance,
@@ -678,23 +760,22 @@ function estimateMapFeatures(
     restaurantDistance,
     collegeDistanceActual ?? collegeDistanceInterpolated,
     pharmacyDistance
-  ].filter((value) => Number.isFinite(value))
+  ]
 
-  const nearset_poi_distance = poiDistances.length ? Math.min(...poiDistances) : null
-  const poi_sum_distance = poiDistances.length ? poiDistances.reduce((sum, value) => sum + value, 0) : null
+  const aggregated = computePoiAggregate(poiDistances)
 
   return {
-    centreDistance,
-    poiCount: weightedAverage((row) => row.poiCount),
-    collegeDistance: collegeDistanceActual ?? collegeDistanceInterpolated,
-    schoolDistance,
-    clinicDistance,
-    postOfficeDistance,
-    kindergartenDistance,
-    restaurantDistance,
-    pharmacyDistance,
-    nearset_poi_distance,
-    poi_sum_distance
+    centreDistance: roundDistance(centreDistance),
+    poiCount: normalizePoiCount(weightedAverage((row) => row.poiCount)),
+    collegeDistance: roundDistance(collegeDistanceActual ?? collegeDistanceInterpolated),
+    schoolDistance: roundDistance(schoolDistance),
+    clinicDistance: roundDistance(clinicDistance),
+    postOfficeDistance: roundDistance(postOfficeDistance),
+    kindergartenDistance: roundDistance(kindergartenDistance),
+    restaurantDistance: roundDistance(restaurantDistance),
+    pharmacyDistance: roundDistance(pharmacyDistance),
+    nearset_poi_distance: aggregated.nearset_poi_distance,
+    poi_sum_distance: aggregated.poi_sum_distance
   }
 }
 
@@ -719,6 +800,83 @@ function buildCityBoundaries(apartments) {
   })
 }
 
+function getFeaturesFromApartment(apartment) {
+  const normalized = {
+    centreDistance: roundDistance(apartment.centreDistance),
+    poiCount: normalizePoiCount(apartment.poiCount),
+    collegeDistance: roundDistance(apartment.collegeDistance),
+    schoolDistance: roundDistance(apartment.schoolDistance),
+    clinicDistance: roundDistance(apartment.clinicDistance),
+    postOfficeDistance: roundDistance(apartment.postOfficeDistance),
+    kindergartenDistance: roundDistance(apartment.kindergartenDistance),
+    restaurantDistance: roundDistance(apartment.restaurantDistance),
+    pharmacyDistance: roundDistance(apartment.pharmacyDistance)
+  }
+
+  const recomputedAggregates = computePoiAggregate([
+    normalized.schoolDistance,
+    normalized.clinicDistance,
+    normalized.postOfficeDistance,
+    normalized.kindergartenDistance,
+    normalized.restaurantDistance,
+    normalized.collegeDistance,
+    normalized.pharmacyDistance
+  ])
+
+  return {
+    ...normalized,
+    nearset_poi_distance: roundDistance(apartment.nearset_poi_distance) ?? recomputedAggregates.nearset_poi_distance,
+    poi_sum_distance: roundDistance(apartment.poi_sum_distance) ?? recomputedAggregates.poi_sum_distance
+  }
+}
+
+function findNearestApartmentWithin(apartments, city, lat, lng, maxMeters) {
+  let best = null
+  const cityKey = city ? normalizeCityName(city) : ''
+
+  for (const apartment of apartments) {
+    if (!Number.isFinite(apartment.latitude) || !Number.isFinite(apartment.longitude)) continue
+    if (cityKey && normalizeCityName(apartment.city) !== cityKey) continue
+
+    const distanceMeters = haversineKm(lat, lng, apartment.latitude, apartment.longitude) * 1000
+    if (distanceMeters > maxMeters) continue
+    if (!best || distanceMeters < best.distanceMeters) {
+      best = { apartment, distanceMeters }
+    }
+  }
+
+  return best
+}
+
+function ViewportTracker({ onViewportChange }) {
+  const map = useMap()
+
+  useEffect(() => {
+    function emitViewport() {
+      const bounds = map.getBounds()
+      onViewportChange({
+        zoom: map.getZoom(),
+        bounds: {
+          south: bounds.getSouth(),
+          west: bounds.getWest(),
+          north: bounds.getNorth(),
+          east: bounds.getEast()
+        }
+      })
+    }
+
+    emitViewport()
+    map.on('moveend', emitViewport)
+    map.on('zoomend', emitViewport)
+    return () => {
+      map.off('moveend', emitViewport)
+      map.off('zoomend', emitViewport)
+    }
+  }, [map, onViewportChange])
+
+  return null
+}
+
 function ClickHandler({
   onMapClick,
   boundaries,
@@ -735,7 +893,9 @@ function ClickHandler({
   restaurantsByCity,
   ensureRestaurantsForCity,
   pharmaciesByCity,
-  ensurePharmaciesForCity
+  ensurePharmaciesForCity,
+  kindergartensByCity,
+  ensureKindergartensForCity
 }) {
   useMapEvents({
     async click(e) {
@@ -751,22 +911,34 @@ function ClickHandler({
         }
       }
 
+      const snapped = findNearestApartmentWithin(
+        apartments,
+        matched || null,
+        lat,
+        lng,
+        APARTMENT_SNAP_DISTANCE_METERS
+      )
+
       let universitiesOverride = null
       let schoolsOverride = null
       let clinicsOverride = null
       let postOfficesOverride = null
       let restaurantsOverride = null
       let pharmaciesOverride = null
-      if (matched && matchedBoundary) {
+      let kindergartensOverride = null
+      if (!snapped && matched && matchedBoundary) {
         universitiesOverride = await ensureUniversitiesForCity(matched, matchedBoundary.polygon)
         schoolsOverride = await ensureSchoolsForCity(matched, matchedBoundary.polygon)
         clinicsOverride = await ensureClinicsForCity(matched, matchedBoundary.polygon)
         postOfficesOverride = await ensurePostOfficesForCity(matched, matchedBoundary.polygon)
         restaurantsOverride = await ensureRestaurantsForCity(matched, matchedBoundary.polygon)
         pharmaciesOverride = await ensurePharmaciesForCity(matched, matchedBoundary.polygon)
+        kindergartensOverride = await ensureKindergartensForCity(matched, matchedBoundary.polygon)
       }
 
-      const features = matched
+      const features = snapped
+        ? getFeaturesFromApartment(snapped.apartment)
+        : matched
         ? estimateMapFeatures(
             lat,
             lng,
@@ -784,7 +956,9 @@ function ClickHandler({
             restaurantsByCity,
             restaurantsOverride,
             pharmaciesByCity,
-            pharmaciesOverride
+            pharmaciesOverride,
+            kindergartensByCity,
+            kindergartensOverride
           )
         : {
             centreDistance: null,
@@ -799,6 +973,10 @@ function ClickHandler({
             nearset_poi_distance: null,
             poi_sum_distance: null
           }
+
+      if (snapped) {
+        matched = snapped.apartment.city || matched
+      }
 
       onMapClick({
         lat,
@@ -825,15 +1003,20 @@ export default function MapView({
   onMapClick,
   onApartmentClick,
   selectedPoint,
-  showCollegeDebug = false,
-  showSchoolDebug = false,
-  showClinicDebug = false,
-  showPostOfficeDebug = false,
-  showRestaurantDebug = false,
-  showPharmacyDebug = false
+  showCollegePoi = false,
+  showSchoolPoi = false,
+  showClinicPoi = false,
+  showPostOfficePoi = false,
+  showRestaurantPoi = false,
+  showPharmacyPoi = false,
+  showKindergartenPoi = false
 }) {
   const center = useMemo(() => [52.069167, 19.480556], []) // center of Poland
   const [apartments, setApartments] = useState([])
+  const [viewport, setViewport] = useState({
+    zoom: 6,
+    bounds: null
+  })
   const cityBoundaries = useMemo(() => buildCityBoundaries(apartments), [apartments])
   const [universitiesByCity, setUniversitiesByCity] = useState({})
   const [schoolsByCity, setSchoolsByCity] = useState({})
@@ -841,25 +1024,29 @@ export default function MapView({
   const [postOfficesByCity, setPostOfficesByCity] = useState({})
   const [restaurantsByCity, setRestaurantsByCity] = useState({})
   const [pharmaciesByCity, setPharmaciesByCity] = useState({})
+  const [kindergartensByCity, setKindergartensByCity] = useState({})
   const inFlightUniversitiesRef = useRef({})
   const inFlightSchoolsRef = useRef({})
   const inFlightClinicsRef = useRef({})
   const inFlightPostOfficesRef = useRef({})
   const inFlightRestaurantsRef = useRef({})
   const inFlightPharmaciesRef = useRef({})
+  const inFlightKindergartensRef = useRef({})
   const universitiesByCityRef = useRef({})
   const schoolsByCityRef = useRef({})
   const clinicsByCityRef = useRef({})
   const postOfficesByCityRef = useRef({})
   const restaurantsByCityRef = useRef({})
   const pharmaciesByCityRef = useRef({})
+  const kindergartensByCityRef = useRef({})
   const failedUniversityCityFetchRef = useRef({})
   const failedSchoolCityFetchRef = useRef({})
   const failedClinicCityFetchRef = useRef({})
   const failedPostOfficeCityFetchRef = useRef({})
   const failedRestaurantCityFetchRef = useRef({})
   const failedPharmacyCityFetchRef = useRef({})
-  const prefetchStartedRef = useRef({ college: false, school: false, clinic: false, postOffice: false, restaurant: false, pharmacy: false })
+  const failedKindergartenCityFetchRef = useRef({})
+  const prefetchStartedRef = useRef({ college: false, school: false, clinic: false, postOffice: false, restaurant: false, pharmacy: false, kindergarten: false })
   const cityGeometry = useMemo(() => buildCityGeometry(apartments), [apartments])
   const cityCenterReferences = useMemo(() => buildCityCenterReferences(apartments), [apartments])
   const universityPoints = useMemo(() => Object.values(universitiesByCity).flat(), [universitiesByCity])
@@ -868,6 +1055,38 @@ export default function MapView({
   const postOfficePoints = useMemo(() => Object.values(postOfficesByCity).flat(), [postOfficesByCity])
   const restaurantPoints = useMemo(() => Object.values(restaurantsByCity).flat(), [restaurantsByCity])
   const pharmacyPoints = useMemo(() => Object.values(pharmaciesByCity).flat(), [pharmaciesByCity])
+
+  const visibleApartments = useMemo(() => {
+    if (!apartments.length) return []
+
+    let inView = apartments
+    const b = viewport.bounds
+    if (b) {
+      inView = apartments.filter((a) => (
+        Number.isFinite(a.latitude)
+        && Number.isFinite(a.longitude)
+        && a.latitude >= b.south
+        && a.latitude <= b.north
+        && a.longitude >= b.west
+        && a.longitude <= b.east
+      ))
+    }
+
+    // Keep first paint responsive by limiting marker count on lower zoom levels.
+    let maxMarkers = 4000
+    if (viewport.zoom < 8) maxMarkers = 300
+    else if (viewport.zoom < 10) maxMarkers = 700
+    else if (viewport.zoom < 12) maxMarkers = 1500
+
+    if (inView.length <= maxMarkers) return inView
+
+    const sampled = []
+    const step = inView.length / maxMarkers
+    for (let i = 0; i < maxMarkers; i += 1) {
+      sampled.push(inView[Math.floor(i * step)])
+    }
+    return sampled
+  }, [apartments, viewport])
 
   useEffect(()=>{
     let cancelled = false
@@ -888,13 +1107,14 @@ export default function MapView({
 
         const rows = data.map((r, idx) => ({
           id: r.id ?? `${cleanCityName(r.city)}-${toNumber(r.latitude)}-${toNumber(r.longitude)}-${idx}`,
+          rawRecord: r,
           city: cleanCityName(r.city),
           type: r.type,
           squareMeters: toNumber(r.squareMeters),
           rooms: toNumber(r.rooms),
           floor: toNumber(r.floor),
           floorCount: toNumber(r.floorCount),
-          buildYear: toNumber(r.buildYear),
+          buildingAge: toNumber(r.building_age ?? r.buildingAge ?? r.buildYear),
           latitude: toNumber(r.latitude),
           longitude: toNumber(r.longitude),
           centreDistance: toNullableNumber(r.centreDistance),
@@ -907,7 +1127,6 @@ export default function MapView({
           restaurantDistance: toNullableNumber(r.restaurantDistance),
           pharmacyDistance: toNullableNumber(r.pharmacyDistance),
           price: toNumber(r.price),
-          ownership: r.ownership,
           condition: r.condition,
           hasParkingSpace: toBoolean(r.hasParkingSpace),
           hasBalcony: toBoolean(r.hasBalcony),
@@ -939,6 +1158,7 @@ export default function MapView({
       setPostOfficesByCity({})
       setRestaurantsByCity({})
       setPharmaciesByCity({})
+      setKindergartensByCity({})
       return
     }
 
@@ -949,6 +1169,7 @@ export default function MapView({
     const postOfficesFromCache = {}
     const restaurantsFromCache = {}
     const pharmaciesFromCache = {}
+    const kindergartensFromCache = {}
     for (const city of cities) {
       const cached = getCachedUniversities(city)
       if (cached) fromCache[city] = cached
@@ -962,6 +1183,8 @@ export default function MapView({
       if (cachedRestaurants) restaurantsFromCache[city] = cachedRestaurants
       const cachedPharmacies = getCachedPharmacies(city)
       if (cachedPharmacies) pharmaciesFromCache[city] = cachedPharmacies
+      const cachedKindergartens = getCachedKindergartens(city)
+      if (cachedKindergartens) kindergartensFromCache[city] = cachedKindergartens
     }
     setUniversitiesByCity(fromCache)
     setSchoolsByCity(schoolsFromCache)
@@ -969,6 +1192,7 @@ export default function MapView({
     setPostOfficesByCity(postOfficesFromCache)
     setRestaurantsByCity(restaurantsFromCache)
     setPharmaciesByCity(pharmaciesFromCache)
+    setKindergartensByCity(kindergartensFromCache)
   }, [apartments])
 
   useEffect(() => {
@@ -994,6 +1218,10 @@ export default function MapView({
   useEffect(() => {
     pharmaciesByCityRef.current = pharmaciesByCity
   }, [pharmaciesByCity])
+
+  useEffect(() => {
+    kindergartensByCityRef.current = kindergartensByCity
+  }, [kindergartensByCity])
 
   async function ensureUniversitiesForCity(city, cityPolygon) {
     const cityKey = normalizeCityName(city)
@@ -1245,17 +1473,42 @@ export default function MapView({
     try { return await requestPromise } finally { delete inFlightPharmaciesRef.current[cityKey] }
   }
 
+  async function ensureKindergartensForCity(city, cityPolygon) {
+    const cityKey = normalizeCityName(city)
+    if (!cityKey) return []
+    const failedAt = failedKindergartenCityFetchRef.current[cityKey]
+    if (Number.isFinite(failedAt) && (Date.now() - failedAt) < OVERPASS_FAILED_CITY_COOLDOWN_MS) return []
+    const statePoints = kindergartensByCityRef.current[cityKey]
+    if (Array.isArray(statePoints) && statePoints.length > 0) return statePoints
+    if (inFlightKindergartensRef.current[cityKey]) return inFlightKindergartensRef.current[cityKey]
+    const cached = getCachedKindergartens(cityKey)
+    if (Array.isArray(cached) && cached.length > 0) {
+      setKindergartensByCity((prev) => ({ ...prev, [cityKey]: cached }))
+      return cached
+    }
+    const requestPromise = (async () => {
+      const points = await fetchKindergartensForCity(cityKey, cityGeometry[cityKey], cityPolygon)
+      putCachedKindergartens(cityKey, points)
+      setKindergartensByCity((prev) => ({ ...prev, [cityKey]: points }))
+      if (!points.length) failedKindergartenCityFetchRef.current[cityKey] = Date.now()
+      else delete failedKindergartenCityFetchRef.current[cityKey]
+      return points
+    })()
+    inFlightKindergartensRef.current[cityKey] = requestPromise
+    try { return await requestPromise } finally { delete inFlightKindergartensRef.current[cityKey] }
+  }
+
   useEffect(() => {
     let cancelled = false
 
-    async function prefetchAllCitiesForDebug() {
-      if (!showCollegeDebug && !showSchoolDebug && !showClinicDebug && !showPostOfficeDebug && !showRestaurantDebug && !showPharmacyDebug) {
-        prefetchStartedRef.current = { college: false, school: false, clinic: false, postOffice: false, restaurant: false, pharmacy: false }
+    async function prefetchAllCitiesForPoi() {
+      if (!showCollegePoi && !showSchoolPoi && !showClinicPoi && !showPostOfficePoi && !showRestaurantPoi && !showPharmacyPoi && !showKindergartenPoi) {
+        prefetchStartedRef.current = { college: false, school: false, clinic: false, postOffice: false, restaurant: false, pharmacy: false, kindergarten: false }
         return
       }
       if (!cityBoundaries.length) return
 
-      if (showCollegeDebug && !prefetchStartedRef.current.college) {
+      if (showCollegePoi && !prefetchStartedRef.current.college) {
         const missingCollegeBoundaries = cityBoundaries.filter((boundary) => {
           const cityKey = normalizeCityName(boundary.city)
           const points = universitiesByCityRef.current[cityKey]
@@ -1272,11 +1525,11 @@ export default function MapView({
             (boundary) => ensureUniversitiesForCity(boundary.city, boundary.polygon),
             () => cancelled
           )
-          if (!cancelled) logOverpass('info', 'college prefetch completed for debug layer')
+          if (!cancelled) logOverpass('info', 'college prefetch completed for POI layer')
         }
       }
 
-      if (showSchoolDebug && !prefetchStartedRef.current.school) {
+      if (showSchoolPoi && !prefetchStartedRef.current.school) {
         const missingSchoolBoundaries = cityBoundaries.filter((boundary) => {
           const cityKey = normalizeCityName(boundary.city)
           const points = schoolsByCityRef.current[cityKey]
@@ -1293,11 +1546,11 @@ export default function MapView({
             (boundary) => ensureSchoolsForCity(boundary.city, boundary.polygon),
             () => cancelled
           )
-          if (!cancelled) logOverpass('info', 'school prefetch completed for debug layer')
+          if (!cancelled) logOverpass('info', 'school prefetch completed for POI layer')
         }
       }
 
-      if (showClinicDebug && !prefetchStartedRef.current.clinic) {
+      if (showClinicPoi && !prefetchStartedRef.current.clinic) {
         const missingClinicBoundaries = cityBoundaries.filter((boundary) => {
           const cityKey = normalizeCityName(boundary.city)
           const points = clinicsByCityRef.current[cityKey]
@@ -1314,11 +1567,11 @@ export default function MapView({
             (boundary) => ensureClinicsForCity(boundary.city, boundary.polygon),
             () => cancelled
           )
-          if (!cancelled) logOverpass('info', 'clinic prefetch completed for debug layer')
+          if (!cancelled) logOverpass('info', 'clinic prefetch completed for POI layer')
         }
       }
 
-      if (showPostOfficeDebug && !prefetchStartedRef.current.postOffice) {
+      if (showPostOfficePoi && !prefetchStartedRef.current.postOffice) {
         const missingPostOfficeBoundaries = cityBoundaries.filter((boundary) => {
           const cityKey = normalizeCityName(boundary.city)
           const points = postOfficesByCityRef.current[cityKey]
@@ -1335,11 +1588,11 @@ export default function MapView({
             (boundary) => ensurePostOfficesForCity(boundary.city, boundary.polygon),
             () => cancelled
           )
-          if (!cancelled) logOverpass('info', 'postOffice prefetch completed for debug layer')
+          if (!cancelled) logOverpass('info', 'postOffice prefetch completed for POI layer')
         }
       }
 
-      if (showRestaurantDebug && !prefetchStartedRef.current.restaurant) {
+      if (showRestaurantPoi && !prefetchStartedRef.current.restaurant) {
         const missing = cityBoundaries.filter((b) => {
           const cityKey = normalizeCityName(b.city)
           const points = restaurantsByCityRef.current[cityKey]
@@ -1353,7 +1606,7 @@ export default function MapView({
         )
       }
 
-      if (showPharmacyDebug && !prefetchStartedRef.current.pharmacy) {
+      if (showPharmacyPoi && !prefetchStartedRef.current.pharmacy) {
         const missing = cityBoundaries.filter((b) => {
           const cityKey = normalizeCityName(b.city)
           const points = pharmaciesByCityRef.current[cityKey]
@@ -1366,13 +1619,27 @@ export default function MapView({
           () => cancelled
         )
       }
+
+      if (showKindergartenPoi && !prefetchStartedRef.current.kindergarten) {
+        const missing = cityBoundaries.filter((b) => {
+          const cityKey = normalizeCityName(b.city)
+          const points = kindergartensByCityRef.current[cityKey]
+          return !Array.isArray(points) || points.length === 0
+        })
+        prefetchStartedRef.current.kindergarten = true
+        await runPrefetchBatches(
+          missing,
+          (boundary) => ensureKindergartensForCity(boundary.city, boundary.polygon),
+          () => cancelled
+        )
+      }
     }
 
-    prefetchAllCitiesForDebug()
+    prefetchAllCitiesForPoi()
     return () => {
       cancelled = true
     }
-  }, [showCollegeDebug, showSchoolDebug, showClinicDebug, showPostOfficeDebug, showRestaurantDebug, showPharmacyDebug, cityBoundaries])
+  }, [showCollegePoi, showSchoolPoi, showClinicPoi, showPostOfficePoi, showRestaurantPoi, showPharmacyPoi, showKindergartenPoi, cityBoundaries])
 
   return (
     <MapContainer center={center} zoom={6} zoomAnimation={false} markerZoomAnimation={false} className="h-full w-full">
@@ -1380,6 +1647,8 @@ export default function MapView({
         attribution='&copy; OpenStreetMap contributors'
         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
       />
+
+      <ViewportTracker onViewportChange={setViewport} />
 
       {cityBoundaries.map((boundary) => (
         <Polygon
@@ -1392,109 +1661,125 @@ export default function MapView({
       {selectedPoint && (
         <CircleMarker
           center={[selectedPoint.lat, selectedPoint.lng]}
-          radius={9}
+          radius={15}
           pathOptions={{ color: '#166534', fillColor: '#22c55e', weight: 2, fillOpacity: 0.95 }}
         />
       )}
 
-      {showCollegeDebug && universityPoints.map((uni, index) => (
+      {showCollegePoi && universityPoints.map((uni, index) => (
         <CircleMarker
           key={`uni-${index}-${uni.lat}-${uni.lng}`}
           center={[uni.lat, uni.lng]}
           radius={5}
-          pathOptions={{ color: '#1d4ed8', fillColor: '#60a5fa', weight: 1, fillOpacity: 0.9 }}
+          pathOptions={{ color: '#c2410c', fillColor: '#f97316', weight: 1, fillOpacity: 0.9 }}
         >
           <Popup>
             <div style={{ minWidth: 140 }}>
-              <div style={{ fontWeight: 600 }}>College/University</div>
+              <div style={{ fontWeight: 600 }}>Uniwersytet</div>
               <div>{uni.name}</div>
             </div>
           </Popup>
         </CircleMarker>
       ))}
 
-      {showSchoolDebug && schoolPoints.map((school, index) => (
+      {showSchoolPoi && schoolPoints.map((school, index) => (
         <CircleMarker
           key={`school-${index}-${school.lat}-${school.lng}`}
           center={[school.lat, school.lng]}
           radius={5}
-          pathOptions={{ color: '#b45309', fillColor: '#f59e0b', weight: 1, fillOpacity: 0.9 }}
+          pathOptions={{ color: '#a16207', fillColor: '#facc15', weight: 1, fillOpacity: 0.9 }}
         >
           <Popup>
             <div style={{ minWidth: 140 }}>
-              <div style={{ fontWeight: 600 }}>School</div>
+              <div style={{ fontWeight: 600 }}>Szkoła</div>
               <div>{school.name}</div>
             </div>
           </Popup>
         </CircleMarker>
       ))}
 
-      {showClinicDebug && clinicPoints.map((clinic, index) => (
+      {showClinicPoi && clinicPoints.map((clinic, index) => (
         <CircleMarker
           key={`clinic-${index}-${clinic.lat}-${clinic.lng}`}
           center={[clinic.lat, clinic.lng]}
           radius={5}
-          pathOptions={{ color: '#be123c', fillColor: '#f43f5e', weight: 1, fillOpacity: 0.9 }}
+          pathOptions={{ color: '#be185d', fillColor: '#ec4899', weight: 1, fillOpacity: 0.9 }}
         >
           <Popup>
             <div style={{ minWidth: 140 }}>
-              <div style={{ fontWeight: 600 }}>Clinic/Hospital</div>
+              <div style={{ fontWeight: 600 }}>Szpital</div>
               <div>{clinic.name}</div>
             </div>
           </Popup>
         </CircleMarker>
       ))}
 
-      {showPostOfficeDebug && postOfficePoints.map((po, index) => (
+      {showPostOfficePoi && postOfficePoints.map((po, index) => (
         <CircleMarker
           key={`post-${index}-${po.lat}-${po.lng}`}
           center={[po.lat, po.lng]}
           radius={5}
-          pathOptions={{ color: '#6d28d9', fillColor: '#8b5cf6', weight: 1, fillOpacity: 0.9 }}
+          pathOptions={{ color: '#0369a1', fillColor: '#22d3ee', weight: 1, fillOpacity: 0.9 }}
         >
           <Popup>
             <div style={{ minWidth: 140 }}>
-              <div style={{ fontWeight: 600 }}>Post office</div>
+              <div style={{ fontWeight: 600 }}>Poczta</div>
               <div>{po.name}</div>
             </div>
           </Popup>
         </CircleMarker>
       ))}
 
-      {showRestaurantDebug && restaurantPoints.map((r, index) => (
+      {showRestaurantPoi && restaurantPoints.map((r, index) => (
         <CircleMarker
           key={`restaurant-${index}-${r.lat}-${r.lng}`}
           center={[r.lat, r.lng]}
           radius={5}
-          pathOptions={{ color: '#047857', fillColor: '#10b981', weight: 1, fillOpacity: 0.9 }}
+          pathOptions={{ color: '#15803d', fillColor: '#22c55e', weight: 1, fillOpacity: 0.9 }}
         >
           <Popup>
             <div style={{ minWidth: 140 }}>
-              <div style={{ fontWeight: 600 }}>Restaurant</div>
+              <div style={{ fontWeight: 600 }}>Restauracja</div>
               <div>{r.name}</div>
             </div>
           </Popup>
         </CircleMarker>
       ))}
 
-      {showPharmacyDebug && pharmacyPoints.map((p, index) => (
+      {showPharmacyPoi && pharmacyPoints.map((p, index) => (
         <CircleMarker
           key={`pharmacy-${index}-${p.lat}-${p.lng}`}
           center={[p.lat, p.lng]}
           radius={5}
-          pathOptions={{ color: '#0e7490', fillColor: '#06b6d4', weight: 1, fillOpacity: 0.9 }}
+          pathOptions={{ color: '#1e3a8a', fillColor: '#1d4ed8', weight: 1, fillOpacity: 0.9 }}
         >
           <Popup>
             <div style={{ minWidth: 140 }}>
-              <div style={{ fontWeight: 600 }}>Pharmacy</div>
+              <div style={{ fontWeight: 600 }}>Apteka</div>
               <div>{p.name}</div>
             </div>
           </Popup>
         </CircleMarker>
       ))}
 
+      {showKindergartenPoi && Object.values(kindergartensByCity).flat().map((k, index) => (
+        <CircleMarker
+          key={`kindergarten-${index}-${k.lat}-${k.lng}`}
+          center={[k.lat, k.lng]}
+          radius={5}
+          pathOptions={{ color: '#6d28d9', fillColor: '#8b5cf6', weight: 1, fillOpacity: 0.9 }}
+        >
+          <Popup>
+            <div style={{ minWidth: 140 }}>
+              <div style={{ fontWeight: 600 }}>Przedszkole/Żłobek</div>
+              <div>{k.name}</div>
+            </div>
+          </Popup>
+        </CircleMarker>
+      ))}
+
       {/* apartment markers */}
-      {apartments.map((a) => (
+      {visibleApartments.map((a) => (
         <CircleMarker
           key={a.id}
           center={[a.latitude, a.longitude]}
@@ -1537,6 +1822,8 @@ export default function MapView({
         ensureRestaurantsForCity={ensureRestaurantsForCity}
         pharmaciesByCity={pharmaciesByCity}
         ensurePharmaciesForCity={ensurePharmaciesForCity}
+        kindergartensByCity={kindergartensByCity}
+        ensureKindergartensForCity={ensureKindergartensForCity}
       />
     </MapContainer>
   )

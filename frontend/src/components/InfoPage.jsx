@@ -127,7 +127,7 @@ export default function InfoPage() {
 
     const items = Array.isArray(cacheData?.payload?.items) ? cacheData.payload.items : []
     const present = new Set(items.map((x) => `${x.cityKey}::${x.poiType}`))
-    const types = ['college', 'school', 'clinic', 'postOffice', 'restaurant', 'pharmacy']
+    const types = ['college', 'school', 'clinic', 'postOffice', 'restaurant', 'pharmacy', 'kindergarten']
 
     const missing = []
     for (const profile of profiles) {
@@ -164,7 +164,7 @@ export default function InfoPage() {
               centerLng: profile.centerLng,
               radiusMeters: profile.radiusMeters,
               polygon: profile.polygon,
-              forceRefresh: false
+              forceRefresh: true
             })
           }, 35000)
           if (!response.ok) {
@@ -233,7 +233,7 @@ export default function InfoPage() {
   }, [cacheData])
 
   const poiTypes = useMemo(() => {
-    const types = new Set(['college', 'school', 'clinic', 'postOffice', 'restaurant', 'pharmacy'])
+    const types = new Set(['college', 'school', 'clinic', 'postOffice', 'restaurant', 'pharmacy', 'kindergarten'])
     const items = Array.isArray(cacheData?.payload?.items) ? cacheData.payload.items : []
     for (const item of items) {
       if (item?.poiType) types.add(item.poiType)
@@ -358,7 +358,7 @@ export default function InfoPage() {
                                 cache ({cell.pointCount})
                               </span>
                             ) : (
-                              <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-1 text-[11px] font-semibold text-slate-600">
+                              <span className="inline-flex items-center rounded-full bg-rose-100 px-2 py-1 text-[11px] font-semibold text-rose-700">
                                 no cache
                               </span>
                             )}

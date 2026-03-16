@@ -1,12 +1,5 @@
 import React from 'react'
 
-const BUILDING_AGE_OPTIONS = [
-  { label: 'Nowoczesne (0-5 lat)', value: 2.5 },
-  { label: 'Wspolczesne (5-20 lat)', value: 12 },
-  { label: 'Bloki z PRL (30-50 lat)', value: 40 },
-  { label: 'Kamienice (70+ lat)', value: 80 }
-]
-
 function setApartmentType(setForm, key) {
   setForm((prev) => ({
     ...prev,
@@ -87,16 +80,16 @@ export default function Sidebar({ form, setForm, onPredict, toggleOpen, isPredic
       </div>
 
       <div className="space-y-2">
-        <label className="text-sm text-slate-600">Wiek budynku (building_age)</label>
-        <select
+        <label className="text-sm text-slate-600">Wiek budynku</label>
+        <input
+          type="number"
+          min="0"
+          step="1"
+          placeholder="Podaj wiek budynku w latach"
           value={form.building_age}
           onChange={(e) => setForm({ ...form, building_age: Number(e.target.value) })}
           className="w-full border rounded p-2"
-        >
-          {BUILDING_AGE_OPTIONS.map((item) => (
-            <option key={item.value} value={item.value}>{item.label}</option>
-          ))}
-        </select>
+        />
       </div>
 
       <div className="space-y-2">
@@ -104,23 +97,23 @@ export default function Sidebar({ form, setForm, onPredict, toggleOpen, isPredic
         <div className="grid grid-cols-1 gap-2 text-sm text-slate-700">
           <label className="flex items-center gap-2">
             <input type="checkbox" checked={form.hasParkingSpace} onChange={(e)=>setForm({...form,hasParkingSpace: e.target.checked})} />
-            hasParkingSpace
+            Parking
           </label>
           <label className="flex items-center gap-2">
             <input type="checkbox" checked={form.hasBalcony} onChange={(e)=>setForm({...form,hasBalcony: e.target.checked})} />
-            hasBalcony
+            Balkon
           </label>
           <label className="flex items-center gap-2">
             <input type="checkbox" checked={form.hasElevator} onChange={(e)=>setForm({...form,hasElevator: e.target.checked})} />
-            hasElevator
+            Winda
           </label>
           <label className="flex items-center gap-2">
             <input type="checkbox" checked={form.hasSecurity} onChange={(e)=>setForm({...form,hasSecurity: e.target.checked})} />
-            hasSecurity
+            Ochrona
           </label>
           <label className="flex items-center gap-2">
             <input type="checkbox" checked={form.hasStorageRoom} onChange={(e)=>setForm({...form,hasStorageRoom: e.target.checked})} />
-            hasStorageRoom
+            Schowek
           </label>
         </div>
       </div>

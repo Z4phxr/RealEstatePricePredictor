@@ -18,14 +18,15 @@ function MapPage(){
 
   const [open, setOpen] = useState(false)
   const [selectedPoint, setSelectedPoint] = useState(null)
-  const [showDebugPanel, setShowDebugPanel] = useState(false)
-  const [debugLayers, setDebugLayers] = useState({
+  const [showPoiPanel, setShowPoiPanel] = useState(false)
+  const [poiLayers, setPoiLayers] = useState({
     college: false,
     school: false,
     clinic: false,
     postOffice: false,
     restaurant: false,
-    pharmacy: false
+    pharmacy: false,
+    kindergarten: false
   })
   const [form, setForm] = useState({
     squareMeters: 50,
@@ -191,111 +192,125 @@ function MapPage(){
           onMapClick={handleMapClick}
           onApartmentClick={handleApartmentClick}
           selectedPoint={selectedPoint}
-          showCollegeDebug={debugLayers.college}
-          showSchoolDebug={debugLayers.school}
-          showClinicDebug={debugLayers.clinic}
-          showPostOfficeDebug={debugLayers.postOffice}
-          showRestaurantDebug={debugLayers.restaurant}
-          showPharmacyDebug={debugLayers.pharmacy}
+          showCollegePoi={poiLayers.college}
+          showSchoolPoi={poiLayers.school}
+          showClinicPoi={poiLayers.clinic}
+          showPostOfficePoi={poiLayers.postOffice}
+          showRestaurantPoi={poiLayers.restaurant}
+          showPharmacyPoi={poiLayers.pharmacy}
+          showKindergartenPoi={poiLayers.kindergarten}
         />
 
         <div className="absolute left-20 top-4 z-[2200]">
           <button
             type="button"
-            onClick={() => setShowDebugPanel((v) => !v)}
+            onClick={() => setShowPoiPanel((v) => !v)}
             className="rounded-md border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow"
           >
-            Debug layers
+            Points of Interest
           </button>
 
-          {showDebugPanel && (
+          {showPoiPanel && (
             <div className="mt-2 w-56 rounded-md border border-slate-300 bg-white p-3 shadow-lg">
-              <div className="text-xs font-semibold text-slate-600">Points of interest</div>
+              <div className="text-xs font-semibold text-slate-600">Points of Interest</div>
 
               <label className="mt-2 flex items-center gap-2 text-sm text-slate-700">
                 <input
                   type="checkbox"
-                  checked={debugLayers.college}
-                  onChange={(e) => setDebugLayers((prev) => ({ ...prev, college: e.target.checked }))}
+                  checked={poiLayers.college}
+                  onChange={(e) => setPoiLayers((prev) => ({ ...prev, college: e.target.checked }))}
                 />
-                College/University
+                Uniwersytet
               </label>
 
               <label className="mt-2 flex items-center gap-2 text-sm text-slate-700">
                 <input
                   type="checkbox"
-                  checked={debugLayers.school}
-                  onChange={(e) => setDebugLayers((prev) => ({ ...prev, school: e.target.checked }))}
+                  checked={poiLayers.school}
+                  onChange={(e) => setPoiLayers((prev) => ({ ...prev, school: e.target.checked }))}
                 />
-                School
+                Szkoła
               </label>
 
               <label className="mt-2 flex items-center gap-2 text-sm text-slate-700">
                 <input
                   type="checkbox"
-                  checked={debugLayers.clinic}
-                  onChange={(e) => setDebugLayers((prev) => ({ ...prev, clinic: e.target.checked }))}
+                  checked={poiLayers.clinic}
+                  onChange={(e) => setPoiLayers((prev) => ({ ...prev, clinic: e.target.checked }))}
                 />
-                Clinic/Hospital
+                Szpital
               </label>
 
               <label className="mt-2 flex items-center gap-2 text-sm text-slate-700">
                 <input
                   type="checkbox"
-                  checked={debugLayers.postOffice}
-                  onChange={(e) => setDebugLayers((prev) => ({ ...prev, postOffice: e.target.checked }))}
+                  checked={poiLayers.postOffice}
+                  onChange={(e) => setPoiLayers((prev) => ({ ...prev, postOffice: e.target.checked }))}
                 />
-                Post office
+                Poczta
               </label>
 
               <label className="mt-2 flex items-center gap-2 text-sm text-slate-700">
                 <input
                   type="checkbox"
-                  checked={debugLayers.restaurant}
-                  onChange={(e) => setDebugLayers((prev) => ({ ...prev, restaurant: e.target.checked }))}
+                  checked={poiLayers.restaurant}
+                  onChange={(e) => setPoiLayers((prev) => ({ ...prev, restaurant: e.target.checked }))}
                 />
-                Restaurant
+                Restauracja
               </label>
 
               <label className="mt-2 flex items-center gap-2 text-sm text-slate-700">
                 <input
                   type="checkbox"
-                  checked={debugLayers.pharmacy}
-                  onChange={(e) => setDebugLayers((prev) => ({ ...prev, pharmacy: e.target.checked }))}
+                  checked={poiLayers.pharmacy}
+                  onChange={(e) => setPoiLayers((prev) => ({ ...prev, pharmacy: e.target.checked }))}
                 />
-                Pharmacy
+                Apteka
+              </label>
+
+              <label className="mt-2 flex items-center gap-2 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={poiLayers.kindergarten}
+                  onChange={(e) => setPoiLayers((prev) => ({ ...prev, kindergarten: e.target.checked }))}
+                />
+                Przedszkole/Żłobek
               </label>
 
               <div className="mt-3 border-t border-slate-200 pt-2">
-                <div className="text-xs font-semibold text-slate-600">Marker colors</div>
+                <div className="text-xs font-semibold text-slate-600">Kolory markerów</div>
                 <div className="mt-2 flex items-center gap-2 text-xs text-slate-700">
-                  <span className="inline-block h-2.5 w-2.5 rounded-full bg-blue-400 ring-1 ring-blue-700" />
-                  College/University
+                  <span className="inline-block h-2.5 w-2.5 rounded-full bg-orange-500 ring-1 ring-orange-700" />
+                  Uniwersytet
                 </div>
                 <div className="mt-1 flex items-center gap-2 text-xs text-slate-700">
-                  <span className="inline-block h-2.5 w-2.5 rounded-full bg-amber-500 ring-1 ring-amber-700" />
-                  School
-                </div>
-                <div className="mt-1 flex items-center gap-2 text-xs text-slate-700">
-                  <span className="inline-block h-2.5 w-2.5 rounded-full bg-rose-500 ring-1 ring-rose-700" />
-                  Clinic/Hospital
-                </div>
-                <div className="mt-1 flex items-center gap-2 text-xs text-slate-700">
-                  <span className="inline-block h-2.5 w-2.5 rounded-full bg-violet-500 ring-1 ring-violet-700" />
-                  Post office
+                  <span className="inline-block h-2.5 w-2.5 rounded-full bg-yellow-400 ring-1 ring-yellow-600" />
+                  Szkoła
                 </div>
                 <div className="mt-1 flex items-center gap-2 text-xs text-slate-700">
                   <span className="inline-block h-2.5 w-2.5 rounded-full bg-emerald-500 ring-1 ring-emerald-700" />
-                  Restaurant
+                  Restauracja
                 </div>
                 <div className="mt-1 flex items-center gap-2 text-xs text-slate-700">
-                  <span className="inline-block h-2.5 w-2.5 rounded-full bg-cyan-500 ring-1 ring-cyan-700" />
-                  Pharmacy
+                  <span className="inline-block h-2.5 w-2.5 rounded-full bg-cyan-400 ring-1 ring-cyan-700" />
+                  Poczta
+                </div>
+                <div className="mt-1 flex items-center gap-2 text-xs text-slate-700">
+                  <span className="inline-block h-2.5 w-2.5 rounded-full bg-blue-700 ring-1 ring-blue-900" />
+                  Apteka
+                </div>
+                <div className="mt-1 flex items-center gap-2 text-xs text-slate-700">
+                  <span className="inline-block h-2.5 w-2.5 rounded-full bg-violet-500 ring-1 ring-violet-700" />
+                  Przedszkole/Żłobek
+                </div>
+                <div className="mt-1 flex items-center gap-2 text-xs text-slate-700">
+                  <span className="inline-block h-2.5 w-2.5 rounded-full bg-pink-500 ring-1 ring-pink-700" />
+                  Szpital
                 </div>
               </div>
 
               <div className="mt-2 text-xs text-slate-500">
-                Debug POI layers are fetched and cached per city.
+                Warstwy POI są pobierane i cache'owane osobno dla każdego miasta.
               </div>
             </div>
           )}
