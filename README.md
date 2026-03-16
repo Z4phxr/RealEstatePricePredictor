@@ -15,7 +15,7 @@ The application is delivered as a full-stack solution:
 
 ## Model Development
 
-Model development was performed in Google Colab. The repository includes a Colab notebook that documents the full experimentation workflow:
+Model development was performed in Google Colab. The repository includes a Jupyter notebook that documents the full experimentation workflow:
 
 - feature analysis
 - data preprocessing
