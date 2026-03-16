@@ -1,0 +1,10 @@
+import pandas as pd
+
+# workspace-relative path
+path = "data/apartments_rent_pl_2024_06.csv"
+
+# simple read (adjust sep/encoding if needed)
+df = pd.read_csv(path)
+
+print(df.shape)
+print(df.head())
