@@ -79,6 +79,27 @@ Pipeline w `.github/workflows/ci.yml` uruchamia:
 - backend: instalacja, check składni, testy `pytest`
 - frontend: instalacja, build produkcyjny
 
+## Release i wersjonowanie
+
+- Aktualna wersja projektu jest utrzymywana w pliku `VERSION`.
+- Historia zmian jest utrzymywana w `CHANGELOG.md`.
+- Manualny release uruchamiasz workflow `Release` (`.github/workflows/release.yml`) z numerem wersji semver (np. `0.2.1`).
+- Workflow release wykonuje walidację (testy + build), tworzy tag `v<wersja>` i publikuje GitHub Release.
+
+Checklistę publikacji znajdziesz w `docs/RELEASE_CHECKLIST.md`.
+
+## Branch protection
+
+Repo zawiera gotową konfigurację ochrony gałęzi:
+- `scripts/branch-protection.json`
+- `scripts/apply-branch-protection.ps1`
+
+Przykład uruchomienia:
+
+`./scripts/apply-branch-protection.ps1 -Owner <github-owner> -Repo <repo-name> -Branch master`
+
+Wymagane: zainstalowany i zalogowany GitHub CLI (`gh`) z uprawnieniami administracyjnymi do repozytorium.
+
 ## Bezpieczeństwo i stabilność
 
 - CORS konfigurowany przez `ALLOWED_ORIGINS`
