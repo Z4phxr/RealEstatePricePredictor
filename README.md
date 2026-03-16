@@ -147,7 +147,6 @@ The table below describes the model features and how they are produced.
 | building_age | float | User input mapping | Building age bucket selected in UI and converted to numeric value |
 | rooms_per_m2 | float | Derived feature | Calculated as rooms divided by square meters |
 
-![Feature importance of the model](screenshots/feature_importance.png)
 
 ## APIs and Data Sources
 
