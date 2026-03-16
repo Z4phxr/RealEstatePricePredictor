@@ -22,7 +22,7 @@ Model development was performed in Google Colab. The repository includes a Colab
 - model experimentation
 - model selection process
 
-After comparing multiple candidates, the selected model was **CatBoost**, with approximately **91.3%  R2 score**.
+After comparing multiple candidates, the selected model was **LightGBM**, with approximately **0.9177  R2 score**.
 
 ![Final Model Leaderboard: Total Price Prediction Accuracy](screenshots/models.png)
 
@@ -42,7 +42,7 @@ The backend is responsible for model serving and geospatial feature support.
 
 At a high level, it:
 
-1. hosts the trained CatBoost model
+1. hosts the trained LightGBM model
 2. receives prediction requests from the frontend
 3. processes apartment and location parameters
 4. returns predicted pricing values
