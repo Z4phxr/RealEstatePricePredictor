@@ -146,6 +146,17 @@ export default function InfoPage() {
     }
   }
 
+  async function refreshCacheStatusOnly() {
+    try {
+      const response = await fetch('/api/poi/cache/status')
+      if (!response.ok) return
+      const payload = await response.json()
+      setCacheData({ ok: true, status: response.status, payload })
+    } catch (_error) {
+      // ignore transient refresh errors; full reload remains available via Refresh button
+    }
+  }
+
   async function runMissingCacheWarmup() {
     const profiles = Array.isArray(profilesData?.payload?.items) ? profilesData.payload.items : []
     if (!profiles.length) {
@@ -209,6 +220,8 @@ export default function InfoPage() {
           }
         }
       }))
+
+      await refreshCacheStatusOnly()
 
       const hasMore = (i + WARMUP_CONCURRENCY) < missing.length
       if (hasMore) {
@@ -397,13 +410,11 @@ export default function InfoPage() {
                       {poiTypes.map((poiType) => {
                         const cell = cityPoiMatrix.byCity[city]?.[poiType]
                         const hasCache = Boolean(cell)
-                        const isRenderable = Number(cell?.pointCount) > 0
-                        const isFresh = Boolean(cell?.isFresh)
                         return (
                           <td key={`${city}-${poiType}`} className="px-3 py-2">
                             {hasCache ? (
-                              <span className={`inline-flex items-center rounded-full px-2 py-1 text-[11px] font-semibold ${isRenderable ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-800'}`}>
-                                {isFresh ? 'fresh' : 'stale'} ({cell.pointCount})
+                              <span className="inline-flex items-center rounded-full bg-emerald-100 px-2 py-1 text-[11px] font-semibold text-emerald-700">
+                                cache ({cell.pointCount})
                               </span>
                             ) : (
                               <span className="inline-flex items-center rounded-full bg-rose-100 px-2 py-1 text-[11px] font-semibold text-rose-700">
