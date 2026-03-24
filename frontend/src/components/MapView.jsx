@@ -14,6 +14,7 @@ const OVERPASS_DEBUG_LOGS = import.meta.env.VITE_OVERPASS_DEBUG === 'true'
 const OVERPASS_REQUEST_TIMEOUT_MS = 30000
 const OVERPASS_FAILED_CITY_COOLDOWN_MS = 1000 * 60 * 10
 const OVERPASS_PREFETCH_CONCURRENCY = 3
+const POI_AUTO_REFRESH_BATCH_DELAY_MS = 1000 * 60
 const POI_AUTO_REFRESH_META_KEY = 'poi_auto_refresh_meta_v1'
 const APARTMENT_SNAP_DISTANCE_METERS = 180
 
@@ -55,11 +56,22 @@ function logOverpass(level, message, details) {
   }
 }
 
-async function runPrefetchBatches(boundaries, worker, isCancelled, concurrency = OVERPASS_PREFETCH_CONCURRENCY) {
+async function runPrefetchBatches(
+  boundaries,
+  worker,
+  isCancelled,
+  concurrency = OVERPASS_PREFETCH_CONCURRENCY,
+  batchDelayMs = 0
+) {
+  const delayMs = Number.isFinite(batchDelayMs) ? Math.max(0, Number(batchDelayMs)) : 0
   for (let i = 0; i < boundaries.length; i += concurrency) {
     if (isCancelled()) return
     const batch = boundaries.slice(i, i + concurrency)
     await Promise.allSettled(batch.map((boundary) => worker(boundary)))
+    const hasMore = (i + concurrency) < boundaries.length
+    if (hasMore && delayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs))
+    }
     if (isCancelled()) return
   }
 }
@@ -1633,7 +1645,8 @@ export default function MapView({
           staleTargets,
           (target) => target.ensureFn(target.city, target.polygon, { forceRefresh: true }),
           () => cancelled,
-          2
+          2,
+          POI_AUTO_REFRESH_BATCH_DELAY_MS
         )
         writeAutoRefreshMeta({
           lastCompletedAt: Date.now(),
