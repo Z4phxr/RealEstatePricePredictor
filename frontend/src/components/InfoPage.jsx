@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 
+const POI_AUTO_REFRESH_META_KEY = 'poi_auto_refresh_meta_v1'
+
 const SAMPLE_PREDICT_PAYLOAD = {
   squareMeters: 52,
   rooms: 2,
@@ -39,6 +41,23 @@ function statusBadge(ok) {
     : 'inline-flex items-center rounded-full bg-rose-100 px-2 py-1 text-xs font-semibold text-rose-700'
 }
 
+function readAutoRefreshMeta() {
+  try {
+    const raw = localStorage.getItem(POI_AUTO_REFRESH_META_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return {}
+    return parsed
+  } catch (_error) {
+    return {}
+  }
+}
+
+function formatMetaTime(ts) {
+  if (!Number.isFinite(ts)) return '-'
+  return new Date(ts).toLocaleString()
+}
+
 export default function InfoPage() {
   const [loading, setLoading] = useState(true)
   const [warming, setWarming] = useState(false)
@@ -47,6 +66,7 @@ export default function InfoPage() {
   const [cacheData, setCacheData] = useState(null)
   const [predictData, setPredictData] = useState(null)
   const [profilesData, setProfilesData] = useState(null)
+  const [autoRefreshMeta, setAutoRefreshMeta] = useState({})
   const [requestLogs, setRequestLogs] = useState([])
 
   function addLog(message) {
@@ -67,6 +87,7 @@ export default function InfoPage() {
   async function loadInfo() {
     setLoading(true)
     setError('')
+    setAutoRefreshMeta(readAutoRefreshMeta())
 
     try {
       const [healthResp, cacheResp, predictResp, profilesResp] = await Promise.allSettled([
@@ -208,9 +229,14 @@ export default function InfoPage() {
 
     loadInfo()
 
+    const metaIntervalId = setInterval(() => {
+      setAutoRefreshMeta(readAutoRefreshMeta())
+    }, 15000)
+
     return () => {
       html.style.overflow = prevHtmlOverflow
       body.style.overflow = prevBodyOverflow
+      clearInterval(metaIntervalId)
       if (root) {
         root.style.overflow = prevRootOverflow || ''
         root.style.height = prevRootHeight || ''
@@ -323,7 +349,15 @@ export default function InfoPage() {
             <div className={statusBadge(Boolean(cacheData?.ok))}>{cacheData?.ok ? 'OK' : 'FAIL'}</div>
             <div className="mt-2 text-xs text-slate-500">Entries: {totalEntries}</div>
             <div className="mt-1 text-xs text-slate-500">TTL: {cacheData?.payload?.ttlSeconds ?? '-'} s</div>
+            <div className="mt-1 text-xs text-slate-500">Auto refresh last start: {formatMetaTime(autoRefreshMeta?.lastStartedAt)}</div>
+            <div className="mt-1 text-xs text-slate-500">Auto refresh last end: {formatMetaTime(autoRefreshMeta?.lastCompletedAt)}</div>
+            <div className="mt-1 text-xs text-slate-500">Auto refresh next run: {formatMetaTime(autoRefreshMeta?.nextScheduledAt)}</div>
           </div>
+        </div>
+
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-xs text-amber-900">
+          Fresh=no means cached data is older than TTL, but points can still be rendered on map when pointCount is greater than 0.
+          The map now runs automatic background refresh and keeps stale dots visible until fresh data arrives.
         </div>
 
         <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
@@ -351,11 +385,13 @@ export default function InfoPage() {
                       {poiTypes.map((poiType) => {
                         const cell = cityPoiMatrix.byCity[city]?.[poiType]
                         const hasCache = Boolean(cell)
+                        const isRenderable = Number(cell?.pointCount) > 0
+                        const isFresh = Boolean(cell?.isFresh)
                         return (
                           <td key={`${city}-${poiType}`} className="px-3 py-2">
                             {hasCache ? (
-                              <span className="inline-flex items-center rounded-full bg-emerald-100 px-2 py-1 text-[11px] font-semibold text-emerald-700">
-                                cache ({cell.pointCount})
+                              <span className={`inline-flex items-center rounded-full px-2 py-1 text-[11px] font-semibold ${isRenderable ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-800'}`}>
+                                {isFresh ? 'fresh' : 'stale'} ({cell.pointCount})
                               </span>
                             ) : (
                               <span className="inline-flex items-center rounded-full bg-rose-100 px-2 py-1 text-[11px] font-semibold text-rose-700">
@@ -391,6 +427,7 @@ export default function InfoPage() {
                         <tr>
                           <th className="px-3 py-2">City</th>
                           <th className="px-3 py-2">Points</th>
+                          <th className="px-3 py-2">Renderable</th>
                           <th className="px-3 py-2">Fresh</th>
                           <th className="px-3 py-2">Cooldown</th>
                           <th className="px-3 py-2">Age (s)</th>
@@ -401,6 +438,7 @@ export default function InfoPage() {
                           <tr key={`${poiType}-${item.cityKey}`} className="border-t border-slate-100">
                             <td className="px-3 py-2 text-slate-700">{item.cityKey}</td>
                             <td className="px-3 py-2 text-slate-700">{item.pointCount}</td>
+                            <td className="px-3 py-2 text-slate-700">{item.pointCount > 0 ? 'yes' : 'no'}</td>
                             <td className="px-3 py-2 text-slate-700">{item.isFresh ? 'yes' : 'no'}</td>
                             <td className="px-3 py-2 text-slate-700">{item.isInCooldown ? 'yes' : 'no'}</td>
                             <td className="px-3 py-2 text-slate-700">{item.ageSeconds ?? '-'}</td>

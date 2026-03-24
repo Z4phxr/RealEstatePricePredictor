@@ -14,7 +14,36 @@ const OVERPASS_DEBUG_LOGS = import.meta.env.VITE_OVERPASS_DEBUG === 'true'
 const OVERPASS_REQUEST_TIMEOUT_MS = 30000
 const OVERPASS_FAILED_CITY_COOLDOWN_MS = 1000 * 60 * 10
 const OVERPASS_PREFETCH_CONCURRENCY = 3
+const POI_AUTO_REFRESH_META_KEY = 'poi_auto_refresh_meta_v1'
 const APARTMENT_SNAP_DISTANCE_METERS = 180
+
+function msUntilNextMidnight(nowMs = Date.now()) {
+  const now = new Date(nowMs)
+  const next = new Date(now)
+  next.setHours(24, 0, 0, 0)
+  return Math.max(1, next.getTime() - now.getTime())
+}
+
+function readAutoRefreshMeta() {
+  try {
+    const raw = localStorage.getItem(POI_AUTO_REFRESH_META_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return {}
+    return parsed
+  } catch (_error) {
+    return {}
+  }
+}
+
+function writeAutoRefreshMeta(metaPatch) {
+  try {
+    const prev = readAutoRefreshMeta()
+    localStorage.setItem(POI_AUTO_REFRESH_META_KEY, JSON.stringify({ ...prev, ...metaPatch }))
+  } catch (_error) {
+    // ignore storage write issues
+  }
+}
 
 function logOverpass(level, message, details) {
   if (!OVERPASS_DEBUG_LOGS) return
@@ -46,10 +75,11 @@ async function fetchJsonWithTimeout(url, options, timeoutMs) {
   }
 }
 
-async function fetchPoiFromBackend(poiType, city, cityGeometry, cityPolygon) {
+async function fetchPoiFromBackend(poiType, city, cityGeometry, cityPolygon, options = {}) {
   if (!cityGeometry) return []
+  const { forceRefresh = false } = options
   const { centerLat, centerLng, radiusMeters } = cityGeometry
-  logOverpass('info', `backend poi request type=${poiType} city=${city}`)
+  logOverpass('info', `backend poi request type=${poiType} city=${city} forceRefresh=${forceRefresh}`)
 
   const response = await fetchJsonWithTimeout(
     '/api/poi/fetch',
@@ -64,7 +94,8 @@ async function fetchPoiFromBackend(poiType, city, cityGeometry, cityPolygon) {
         centerLat,
         centerLng,
         radiusMeters,
-        polygon: cityPolygon || []
+        polygon: cityPolygon || [],
+        forceRefresh
       })
     },
     OVERPASS_REQUEST_TIMEOUT_MS
@@ -559,32 +590,32 @@ function buildCityGeometry(apartments) {
   return geometry
 }
 
-async function fetchUniversitiesForCity(city, cityGeometry, cityPolygon) {
-  return fetchPoiFromBackend('college', city, cityGeometry, cityPolygon)
+async function fetchUniversitiesForCity(city, cityGeometry, cityPolygon, options = {}) {
+  return fetchPoiFromBackend('college', city, cityGeometry, cityPolygon, options)
 }
 
-async function fetchSchoolsForCity(city, cityGeometry, cityPolygon) {
-  return fetchPoiFromBackend('school', city, cityGeometry, cityPolygon)
+async function fetchSchoolsForCity(city, cityGeometry, cityPolygon, options = {}) {
+  return fetchPoiFromBackend('school', city, cityGeometry, cityPolygon, options)
 }
 
-async function fetchClinicsForCity(city, cityGeometry, cityPolygon) {
-  return fetchPoiFromBackend('clinic', city, cityGeometry, cityPolygon)
+async function fetchClinicsForCity(city, cityGeometry, cityPolygon, options = {}) {
+  return fetchPoiFromBackend('clinic', city, cityGeometry, cityPolygon, options)
 }
 
-async function fetchPostOfficesForCity(city, cityGeometry, cityPolygon) {
-  return fetchPoiFromBackend('postOffice', city, cityGeometry, cityPolygon)
+async function fetchPostOfficesForCity(city, cityGeometry, cityPolygon, options = {}) {
+  return fetchPoiFromBackend('postOffice', city, cityGeometry, cityPolygon, options)
 }
 
-async function fetchRestaurantsForCity(city, cityGeometry, cityPolygon) {
-  return fetchPoiFromBackend('restaurant', city, cityGeometry, cityPolygon)
+async function fetchRestaurantsForCity(city, cityGeometry, cityPolygon, options = {}) {
+  return fetchPoiFromBackend('restaurant', city, cityGeometry, cityPolygon, options)
 }
 
-async function fetchPharmaciesForCity(city, cityGeometry, cityPolygon) {
-  return fetchPoiFromBackend('pharmacy', city, cityGeometry, cityPolygon)
+async function fetchPharmaciesForCity(city, cityGeometry, cityPolygon, options = {}) {
+  return fetchPoiFromBackend('pharmacy', city, cityGeometry, cityPolygon, options)
 }
 
-async function fetchKindergartensForCity(city, cityGeometry, cityPolygon) {
-  return fetchPoiFromBackend('kindergarten', city, cityGeometry, cityPolygon)
+async function fetchKindergartensForCity(city, cityGeometry, cityPolygon, options = {}) {
+  return fetchPoiFromBackend('kindergarten', city, cityGeometry, cityPolygon, options)
 }
 
 function estimateMapFeatures(
@@ -1046,6 +1077,7 @@ export default function MapView({
   const failedRestaurantCityFetchRef = useRef({})
   const failedPharmacyCityFetchRef = useRef({})
   const failedKindergartenCityFetchRef = useRef({})
+  const autoRefreshInFlightRef = useRef(false)
   const prefetchStartedRef = useRef({ college: false, school: false, clinic: false, postOffice: false, restaurant: false, pharmacy: false, kindergarten: false })
   const cityGeometry = useMemo(() => buildCityGeometry(apartments), [apartments])
   const cityCenterReferences = useMemo(() => buildCityCenterReferences(apartments), [apartments])
@@ -1223,20 +1255,26 @@ export default function MapView({
     kindergartensByCityRef.current = kindergartensByCity
   }, [kindergartensByCity])
 
-  async function ensureUniversitiesForCity(city, cityPolygon) {
+  async function ensureUniversitiesForCity(city, cityPolygon, options = {}) {
     const cityKey = normalizeCityName(city)
     if (!cityKey) return []
+    const forceRefresh = Boolean(options.forceRefresh)
 
     const failedAt = failedUniversityCityFetchRef.current[cityKey]
-    if (Number.isFinite(failedAt) && (Date.now() - failedAt) < OVERPASS_FAILED_CITY_COOLDOWN_MS) {
+    if (!forceRefresh && Number.isFinite(failedAt) && (Date.now() - failedAt) < OVERPASS_FAILED_CITY_COOLDOWN_MS) {
       logOverpass('warn', `college cooldown active city=${cityKey}, skip retry`)
       return []
     }
 
     const statePoints = universitiesByCityRef.current[cityKey]
-    if (Array.isArray(statePoints) && statePoints.length > 0) {
-      logOverpass('info', `state hit city=${cityKey} count=${statePoints.length}`)
-      return statePoints
+    if (!forceRefresh && Array.isArray(statePoints) && statePoints.length > 0) {
+      const stateBackedByFreshLocalCache = getCachedUniversities(cityKey)
+      if (!Array.isArray(stateBackedByFreshLocalCache) || stateBackedByFreshLocalCache.length === 0) {
+        logOverpass('info', `college state is stale city=${cityKey}, forcing refresh`)
+      } else {
+        logOverpass('info', `state hit city=${cityKey} count=${statePoints.length}`)
+        return statePoints
+      }
     }
 
     if (inFlightUniversitiesRef.current[cityKey]) {
@@ -1244,16 +1282,16 @@ export default function MapView({
       return inFlightUniversitiesRef.current[cityKey]
     }
 
-    const cached = getCachedUniversities(cityKey)
-    if (Array.isArray(cached) && cached.length > 0) {
+    const cached = forceRefresh ? null : getCachedUniversities(cityKey)
+    if (!forceRefresh && Array.isArray(cached) && cached.length > 0) {
       setUniversitiesByCity((prev) => ({ ...prev, [cityKey]: cached }))
       logOverpass('info', `cache loaded into state city=${cityKey} count=${cached.length}`)
       return cached
     }
 
-    logOverpass('info', `cache miss city=${cityKey}`)
+    logOverpass('info', `${forceRefresh ? 'force refresh' : 'cache miss'} city=${cityKey}`)
     const requestPromise = (async () => {
-      const points = await fetchUniversitiesForCity(cityKey, cityGeometry[cityKey], cityPolygon)
+      const points = await fetchUniversitiesForCity(cityKey, cityGeometry[cityKey], cityPolygon, { forceRefresh })
       putCachedUniversities(cityKey, points)
       setUniversitiesByCity((prev) => ({ ...prev, [cityKey]: points }))
       logOverpass('info', `state updated from network city=${cityKey} count=${points.length}`)
@@ -1273,20 +1311,26 @@ export default function MapView({
     }
   }
 
-  async function ensureSchoolsForCity(city, cityPolygon) {
+  async function ensureSchoolsForCity(city, cityPolygon, options = {}) {
     const cityKey = normalizeCityName(city)
     if (!cityKey) return []
+    const forceRefresh = Boolean(options.forceRefresh)
 
     const failedAt = failedSchoolCityFetchRef.current[cityKey]
-    if (Number.isFinite(failedAt) && (Date.now() - failedAt) < OVERPASS_FAILED_CITY_COOLDOWN_MS) {
+    if (!forceRefresh && Number.isFinite(failedAt) && (Date.now() - failedAt) < OVERPASS_FAILED_CITY_COOLDOWN_MS) {
       logOverpass('warn', `school cooldown active city=${cityKey}, skip retry`)
       return []
     }
 
     const statePoints = schoolsByCityRef.current[cityKey]
-    if (Array.isArray(statePoints) && statePoints.length > 0) {
-      logOverpass('info', `school state hit city=${cityKey} count=${statePoints.length}`)
-      return statePoints
+    if (!forceRefresh && Array.isArray(statePoints) && statePoints.length > 0) {
+      const stateBackedByFreshLocalCache = getCachedSchools(cityKey)
+      if (!Array.isArray(stateBackedByFreshLocalCache) || stateBackedByFreshLocalCache.length === 0) {
+        logOverpass('info', `school state is stale city=${cityKey}, forcing refresh`)
+      } else {
+        logOverpass('info', `school state hit city=${cityKey} count=${statePoints.length}`)
+        return statePoints
+      }
     }
 
     if (inFlightSchoolsRef.current[cityKey]) {
@@ -1294,16 +1338,16 @@ export default function MapView({
       return inFlightSchoolsRef.current[cityKey]
     }
 
-    const cached = getCachedSchools(cityKey)
-    if (Array.isArray(cached) && cached.length > 0) {
+    const cached = forceRefresh ? null : getCachedSchools(cityKey)
+    if (!forceRefresh && Array.isArray(cached) && cached.length > 0) {
       setSchoolsByCity((prev) => ({ ...prev, [cityKey]: cached }))
       logOverpass('info', `school cache loaded into state city=${cityKey} count=${cached.length}`)
       return cached
     }
 
-    logOverpass('info', `school cache miss city=${cityKey}`)
+    logOverpass('info', `school ${forceRefresh ? 'force refresh' : 'cache miss'} city=${cityKey}`)
     const requestPromise = (async () => {
-      const points = await fetchSchoolsForCity(cityKey, cityGeometry[cityKey], cityPolygon)
+      const points = await fetchSchoolsForCity(cityKey, cityGeometry[cityKey], cityPolygon, { forceRefresh })
       putCachedSchools(cityKey, points)
       setSchoolsByCity((prev) => ({ ...prev, [cityKey]: points }))
       logOverpass('info', `school state updated from network city=${cityKey} count=${points.length}`)
@@ -1323,20 +1367,26 @@ export default function MapView({
     }
   }
 
-  async function ensureClinicsForCity(city, cityPolygon) {
+  async function ensureClinicsForCity(city, cityPolygon, options = {}) {
     const cityKey = normalizeCityName(city)
     if (!cityKey) return []
+    const forceRefresh = Boolean(options.forceRefresh)
 
     const failedAt = failedClinicCityFetchRef.current[cityKey]
-    if (Number.isFinite(failedAt) && (Date.now() - failedAt) < OVERPASS_FAILED_CITY_COOLDOWN_MS) {
+    if (!forceRefresh && Number.isFinite(failedAt) && (Date.now() - failedAt) < OVERPASS_FAILED_CITY_COOLDOWN_MS) {
       logOverpass('warn', `clinic cooldown active city=${cityKey}, skip retry`)
       return []
     }
 
     const statePoints = clinicsByCityRef.current[cityKey]
-    if (Array.isArray(statePoints) && statePoints.length > 0) {
-      logOverpass('info', `clinic state hit city=${cityKey} count=${statePoints.length}`)
-      return statePoints
+    if (!forceRefresh && Array.isArray(statePoints) && statePoints.length > 0) {
+      const stateBackedByFreshLocalCache = getCachedClinics(cityKey)
+      if (!Array.isArray(stateBackedByFreshLocalCache) || stateBackedByFreshLocalCache.length === 0) {
+        logOverpass('info', `clinic state is stale city=${cityKey}, forcing refresh`)
+      } else {
+        logOverpass('info', `clinic state hit city=${cityKey} count=${statePoints.length}`)
+        return statePoints
+      }
     }
 
     if (inFlightClinicsRef.current[cityKey]) {
@@ -1344,16 +1394,16 @@ export default function MapView({
       return inFlightClinicsRef.current[cityKey]
     }
 
-    const cached = getCachedClinics(cityKey)
-    if (Array.isArray(cached) && cached.length > 0) {
+    const cached = forceRefresh ? null : getCachedClinics(cityKey)
+    if (!forceRefresh && Array.isArray(cached) && cached.length > 0) {
       setClinicsByCity((prev) => ({ ...prev, [cityKey]: cached }))
       logOverpass('info', `clinic cache loaded into state city=${cityKey} count=${cached.length}`)
       return cached
     }
 
-    logOverpass('info', `clinic cache miss city=${cityKey}`)
+    logOverpass('info', `clinic ${forceRefresh ? 'force refresh' : 'cache miss'} city=${cityKey}`)
     const requestPromise = (async () => {
-      const points = await fetchClinicsForCity(cityKey, cityGeometry[cityKey], cityPolygon)
+      const points = await fetchClinicsForCity(cityKey, cityGeometry[cityKey], cityPolygon, { forceRefresh })
       putCachedClinics(cityKey, points)
       setClinicsByCity((prev) => ({ ...prev, [cityKey]: points }))
       logOverpass('info', `clinic state updated from network city=${cityKey} count=${points.length}`)
@@ -1373,20 +1423,26 @@ export default function MapView({
     }
   }
 
-  async function ensurePostOfficesForCity(city, cityPolygon) {
+  async function ensurePostOfficesForCity(city, cityPolygon, options = {}) {
     const cityKey = normalizeCityName(city)
     if (!cityKey) return []
+    const forceRefresh = Boolean(options.forceRefresh)
 
     const failedAt = failedPostOfficeCityFetchRef.current[cityKey]
-    if (Number.isFinite(failedAt) && (Date.now() - failedAt) < OVERPASS_FAILED_CITY_COOLDOWN_MS) {
+    if (!forceRefresh && Number.isFinite(failedAt) && (Date.now() - failedAt) < OVERPASS_FAILED_CITY_COOLDOWN_MS) {
       logOverpass('warn', `postOffice cooldown active city=${cityKey}, skip retry`)
       return []
     }
 
     const statePoints = postOfficesByCityRef.current[cityKey]
-    if (Array.isArray(statePoints) && statePoints.length > 0) {
-      logOverpass('info', `postOffice state hit city=${cityKey} count=${statePoints.length}`)
-      return statePoints
+    if (!forceRefresh && Array.isArray(statePoints) && statePoints.length > 0) {
+      const stateBackedByFreshLocalCache = getCachedPostOffices(cityKey)
+      if (!Array.isArray(stateBackedByFreshLocalCache) || stateBackedByFreshLocalCache.length === 0) {
+        logOverpass('info', `postOffice state is stale city=${cityKey}, forcing refresh`)
+      } else {
+        logOverpass('info', `postOffice state hit city=${cityKey} count=${statePoints.length}`)
+        return statePoints
+      }
     }
 
     if (inFlightPostOfficesRef.current[cityKey]) {
@@ -1394,16 +1450,16 @@ export default function MapView({
       return inFlightPostOfficesRef.current[cityKey]
     }
 
-    const cached = getCachedPostOffices(cityKey)
-    if (Array.isArray(cached) && cached.length > 0) {
+    const cached = forceRefresh ? null : getCachedPostOffices(cityKey)
+    if (!forceRefresh && Array.isArray(cached) && cached.length > 0) {
       setPostOfficesByCity((prev) => ({ ...prev, [cityKey]: cached }))
       logOverpass('info', `postOffice cache loaded into state city=${cityKey} count=${cached.length}`)
       return cached
     }
 
-    logOverpass('info', `postOffice cache miss city=${cityKey}`)
+    logOverpass('info', `postOffice ${forceRefresh ? 'force refresh' : 'cache miss'} city=${cityKey}`)
     const requestPromise = (async () => {
-      const points = await fetchPostOfficesForCity(cityKey, cityGeometry[cityKey], cityPolygon)
+      const points = await fetchPostOfficesForCity(cityKey, cityGeometry[cityKey], cityPolygon, { forceRefresh })
       putCachedPostOffices(cityKey, points)
       setPostOfficesByCity((prev) => ({ ...prev, [cityKey]: points }))
       logOverpass('info', `postOffice state updated from network city=${cityKey} count=${points.length}`)
@@ -1423,21 +1479,26 @@ export default function MapView({
     }
   }
 
-  async function ensureRestaurantsForCity(city, cityPolygon) {
+  async function ensureRestaurantsForCity(city, cityPolygon, options = {}) {
     const cityKey = normalizeCityName(city)
     if (!cityKey) return []
+    const forceRefresh = Boolean(options.forceRefresh)
     const failedAt = failedRestaurantCityFetchRef.current[cityKey]
-    if (Number.isFinite(failedAt) && (Date.now() - failedAt) < OVERPASS_FAILED_CITY_COOLDOWN_MS) return []
+    if (!forceRefresh && Number.isFinite(failedAt) && (Date.now() - failedAt) < OVERPASS_FAILED_CITY_COOLDOWN_MS) return []
     const statePoints = restaurantsByCityRef.current[cityKey]
-    if (Array.isArray(statePoints) && statePoints.length > 0) return statePoints
+    if (!forceRefresh && Array.isArray(statePoints) && statePoints.length > 0) {
+      const stateBackedByFreshLocalCache = getCachedRestaurants(cityKey)
+      if (Array.isArray(stateBackedByFreshLocalCache) && stateBackedByFreshLocalCache.length > 0) return statePoints
+      logOverpass('info', `restaurant state is stale city=${cityKey}, forcing refresh`)
+    }
     if (inFlightRestaurantsRef.current[cityKey]) return inFlightRestaurantsRef.current[cityKey]
-    const cached = getCachedRestaurants(cityKey)
-    if (Array.isArray(cached) && cached.length > 0) {
+    const cached = forceRefresh ? null : getCachedRestaurants(cityKey)
+    if (!forceRefresh && Array.isArray(cached) && cached.length > 0) {
       setRestaurantsByCity((prev) => ({ ...prev, [cityKey]: cached }))
       return cached
     }
     const requestPromise = (async () => {
-      const points = await fetchRestaurantsForCity(cityKey, cityGeometry[cityKey], cityPolygon)
+      const points = await fetchRestaurantsForCity(cityKey, cityGeometry[cityKey], cityPolygon, { forceRefresh })
       putCachedRestaurants(cityKey, points)
       setRestaurantsByCity((prev) => ({ ...prev, [cityKey]: points }))
       if (!points.length) failedRestaurantCityFetchRef.current[cityKey] = Date.now()
@@ -1448,21 +1509,26 @@ export default function MapView({
     try { return await requestPromise } finally { delete inFlightRestaurantsRef.current[cityKey] }
   }
 
-  async function ensurePharmaciesForCity(city, cityPolygon) {
+  async function ensurePharmaciesForCity(city, cityPolygon, options = {}) {
     const cityKey = normalizeCityName(city)
     if (!cityKey) return []
+    const forceRefresh = Boolean(options.forceRefresh)
     const failedAt = failedPharmacyCityFetchRef.current[cityKey]
-    if (Number.isFinite(failedAt) && (Date.now() - failedAt) < OVERPASS_FAILED_CITY_COOLDOWN_MS) return []
+    if (!forceRefresh && Number.isFinite(failedAt) && (Date.now() - failedAt) < OVERPASS_FAILED_CITY_COOLDOWN_MS) return []
     const statePoints = pharmaciesByCityRef.current[cityKey]
-    if (Array.isArray(statePoints) && statePoints.length > 0) return statePoints
+    if (!forceRefresh && Array.isArray(statePoints) && statePoints.length > 0) {
+      const stateBackedByFreshLocalCache = getCachedPharmacies(cityKey)
+      if (Array.isArray(stateBackedByFreshLocalCache) && stateBackedByFreshLocalCache.length > 0) return statePoints
+      logOverpass('info', `pharmacy state is stale city=${cityKey}, forcing refresh`)
+    }
     if (inFlightPharmaciesRef.current[cityKey]) return inFlightPharmaciesRef.current[cityKey]
-    const cached = getCachedPharmacies(cityKey)
-    if (Array.isArray(cached) && cached.length > 0) {
+    const cached = forceRefresh ? null : getCachedPharmacies(cityKey)
+    if (!forceRefresh && Array.isArray(cached) && cached.length > 0) {
       setPharmaciesByCity((prev) => ({ ...prev, [cityKey]: cached }))
       return cached
     }
     const requestPromise = (async () => {
-      const points = await fetchPharmaciesForCity(cityKey, cityGeometry[cityKey], cityPolygon)
+      const points = await fetchPharmaciesForCity(cityKey, cityGeometry[cityKey], cityPolygon, { forceRefresh })
       putCachedPharmacies(cityKey, points)
       setPharmaciesByCity((prev) => ({ ...prev, [cityKey]: points }))
       if (!points.length) failedPharmacyCityFetchRef.current[cityKey] = Date.now()
@@ -1473,21 +1539,26 @@ export default function MapView({
     try { return await requestPromise } finally { delete inFlightPharmaciesRef.current[cityKey] }
   }
 
-  async function ensureKindergartensForCity(city, cityPolygon) {
+  async function ensureKindergartensForCity(city, cityPolygon, options = {}) {
     const cityKey = normalizeCityName(city)
     if (!cityKey) return []
+    const forceRefresh = Boolean(options.forceRefresh)
     const failedAt = failedKindergartenCityFetchRef.current[cityKey]
-    if (Number.isFinite(failedAt) && (Date.now() - failedAt) < OVERPASS_FAILED_CITY_COOLDOWN_MS) return []
+    if (!forceRefresh && Number.isFinite(failedAt) && (Date.now() - failedAt) < OVERPASS_FAILED_CITY_COOLDOWN_MS) return []
     const statePoints = kindergartensByCityRef.current[cityKey]
-    if (Array.isArray(statePoints) && statePoints.length > 0) return statePoints
+    if (!forceRefresh && Array.isArray(statePoints) && statePoints.length > 0) {
+      const stateBackedByFreshLocalCache = getCachedKindergartens(cityKey)
+      if (Array.isArray(stateBackedByFreshLocalCache) && stateBackedByFreshLocalCache.length > 0) return statePoints
+      logOverpass('info', `kindergarten state is stale city=${cityKey}, forcing refresh`)
+    }
     if (inFlightKindergartensRef.current[cityKey]) return inFlightKindergartensRef.current[cityKey]
-    const cached = getCachedKindergartens(cityKey)
-    if (Array.isArray(cached) && cached.length > 0) {
+    const cached = forceRefresh ? null : getCachedKindergartens(cityKey)
+    if (!forceRefresh && Array.isArray(cached) && cached.length > 0) {
       setKindergartensByCity((prev) => ({ ...prev, [cityKey]: cached }))
       return cached
     }
     const requestPromise = (async () => {
-      const points = await fetchKindergartensForCity(cityKey, cityGeometry[cityKey], cityPolygon)
+      const points = await fetchKindergartensForCity(cityKey, cityGeometry[cityKey], cityPolygon, { forceRefresh })
       putCachedKindergartens(cityKey, points)
       setKindergartensByCity((prev) => ({ ...prev, [cityKey]: points }))
       if (!points.length) failedKindergartenCityFetchRef.current[cityKey] = Date.now()
@@ -1497,6 +1568,106 @@ export default function MapView({
     inFlightKindergartensRef.current[cityKey] = requestPromise
     try { return await requestPromise } finally { delete inFlightKindergartensRef.current[cityKey] }
   }
+
+  useEffect(() => {
+    if (!cityBoundaries.length) return undefined
+
+    let cancelled = false
+    let timeoutId = null
+
+    const ensureByType = {
+      college: ensureUniversitiesForCity,
+      school: ensureSchoolsForCity,
+      clinic: ensureClinicsForCity,
+      postOffice: ensurePostOfficesForCity,
+      restaurant: ensureRestaurantsForCity,
+      pharmacy: ensurePharmaciesForCity,
+      kindergarten: ensureKindergartensForCity
+    }
+
+    const boundaryByCityKey = cityBoundaries.reduce((acc, boundary) => {
+      const cityKey = normalizeCityName(boundary.city)
+      if (cityKey) acc[cityKey] = boundary
+      return acc
+    }, {})
+
+    async function refreshStalePoiEntries() {
+      if (cancelled || autoRefreshInFlightRef.current) return
+      autoRefreshInFlightRef.current = true
+      writeAutoRefreshMeta({
+        lastStartedAt: Date.now()
+      })
+
+      try {
+        const response = await fetchJsonWithTimeout('/api/poi/cache/status', {}, OVERPASS_REQUEST_TIMEOUT_MS)
+        if (!response.ok) {
+          writeAutoRefreshMeta({ lastError: `status-${response.status}` })
+          return
+        }
+
+        const payload = await response.json()
+        const items = Array.isArray(payload?.items) ? payload.items : []
+        const staleTargets = []
+
+        for (const item of items) {
+          const cityKey = normalizeCityName(item?.cityKey)
+          const poiType = String(item?.poiType || '')
+          const ensureFn = ensureByType[poiType]
+          const boundary = boundaryByCityKey[cityKey]
+          if (!cityKey || !poiType || !ensureFn || !boundary) continue
+          if (item?.isFresh || item?.isInCooldown) continue
+          staleTargets.push({ city: boundary.city, polygon: boundary.polygon, ensureFn, poiType })
+        }
+
+        if (!staleTargets.length) {
+          writeAutoRefreshMeta({
+            lastCompletedAt: Date.now(),
+            lastRefreshedCount: 0,
+            lastError: null
+          })
+          return
+        }
+
+        logOverpass('info', `auto refresh start staleTargets=${staleTargets.length}`)
+        await runPrefetchBatches(
+          staleTargets,
+          (target) => target.ensureFn(target.city, target.polygon, { forceRefresh: true }),
+          () => cancelled,
+          2
+        )
+        writeAutoRefreshMeta({
+          lastCompletedAt: Date.now(),
+          lastRefreshedCount: staleTargets.length,
+          lastError: null
+        })
+        logOverpass('info', `auto refresh completed staleTargets=${staleTargets.length}`)
+      } catch (_error) {
+        writeAutoRefreshMeta({
+          lastCompletedAt: Date.now(),
+          lastError: 'fetch-failed'
+        })
+      } finally {
+        autoRefreshInFlightRef.current = false
+      }
+    }
+
+    const scheduleNextMidnightRefresh = () => {
+      if (cancelled) return
+      const delayMs = msUntilNextMidnight()
+      writeAutoRefreshMeta({ nextScheduledAt: Date.now() + delayMs })
+      timeoutId = setTimeout(async () => {
+        await refreshStalePoiEntries()
+        scheduleNextMidnightRefresh()
+      }, delayMs)
+    }
+
+    scheduleNextMidnightRefresh()
+
+    return () => {
+      cancelled = true
+      if (timeoutId) clearTimeout(timeoutId)
+    }
+  }, [cityBoundaries])
 
   useEffect(() => {
     let cancelled = false
