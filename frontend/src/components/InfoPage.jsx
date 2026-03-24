@@ -2,6 +2,9 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 
 const POI_AUTO_REFRESH_META_KEY = 'poi_auto_refresh_meta_v1'
+const WARMUP_REQUEST_TIMEOUT_MS = 90000
+const WARMUP_CONCURRENCY = 1
+const WARMUP_BATCH_DELAY_MS = 30000
 
 const SAMPLE_PREDICT_PAYLOAD = {
   squareMeters: 52,
@@ -56,6 +59,10 @@ function readAutoRefreshMeta() {
 function formatMetaTime(ts) {
   if (!Number.isFinite(ts)) return '-'
   return new Date(ts).toLocaleString()
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 export default function InfoPage() {
@@ -168,9 +175,8 @@ export default function InfoPage() {
     setWarming(true)
     addLog(`Starting missing cache warmup for ${missing.length} requests`)
 
-    const concurrency = 2
-    for (let i = 0; i < missing.length; i += concurrency) {
-      const batch = missing.slice(i, i + concurrency)
+    for (let i = 0; i < missing.length; i += WARMUP_CONCURRENCY) {
+      const batch = missing.slice(i, i + WARMUP_CONCURRENCY)
       await Promise.allSettled(batch.map(async ({ profile, poiType }) => {
         const city = profile.city
         addLog(`Request ${poiType} for ${city}`)
@@ -187,7 +193,7 @@ export default function InfoPage() {
               polygon: profile.polygon,
               forceRefresh: true
             })
-          }, 35000)
+          }, WARMUP_REQUEST_TIMEOUT_MS)
           if (!response.ok) {
             addLog(`Failed ${poiType} for ${city} status=${response.status}`)
             return
@@ -203,6 +209,12 @@ export default function InfoPage() {
           }
         }
       }))
+
+      const hasMore = (i + WARMUP_CONCURRENCY) < missing.length
+      if (hasMore) {
+        addLog(`Pause ${Math.round(WARMUP_BATCH_DELAY_MS / 1000)}s before next warmup batch`)
+        await sleep(WARMUP_BATCH_DELAY_MS)
+      }
     }
 
     addLog('Warmup finished, refreshing status')
