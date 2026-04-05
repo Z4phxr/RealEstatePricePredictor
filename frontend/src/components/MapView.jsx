@@ -17,6 +17,7 @@ const OVERPASS_PREFETCH_CONCURRENCY = 3
 const POI_AUTO_REFRESH_BATCH_DELAY_MS = 1000 * 60
 const POI_AUTO_REFRESH_META_KEY = 'poi_auto_refresh_meta_v1'
 const APARTMENT_SNAP_DISTANCE_METERS = 180
+const POI_LOADING_NOTICE_PL = 'Poczekaj chwile, trwa odswiezanie danych POI. Dodatkowe informacje znajdziesz na /info.'
 
 function msUntilNextMidnight(nowMs = Date.now()) {
   const now = new Date(nowMs)
@@ -561,6 +562,48 @@ function getCachedKindergartens(city) {
   return item.points
 }
 
+function getCachedPayloadAny(cacheReader, city) {
+  const cache = cacheReader()
+  const item = cache[city]
+  if (!item || !Array.isArray(item.points)) {
+    return { points: null, exists: false, isFresh: false }
+  }
+  const isFresh = Number.isFinite(item.updatedAt) && (Date.now() - item.updatedAt) < UNIVERSITIES_CACHE_TTL_MS
+  return {
+    points: item.points,
+    exists: true,
+    isFresh
+  }
+}
+
+function getCachedUniversitiesAny(city) {
+  return getCachedPayloadAny(readUniversitiesCache, city)
+}
+
+function getCachedSchoolsAny(city) {
+  return getCachedPayloadAny(readSchoolsCache, city)
+}
+
+function getCachedClinicsAny(city) {
+  return getCachedPayloadAny(readClinicsCache, city)
+}
+
+function getCachedPostOfficesAny(city) {
+  return getCachedPayloadAny(readPostOfficesCache, city)
+}
+
+function getCachedRestaurantsAny(city) {
+  return getCachedPayloadAny(readRestaurantsCache, city)
+}
+
+function getCachedPharmaciesAny(city) {
+  return getCachedPayloadAny(readPharmaciesCache, city)
+}
+
+function getCachedKindergartensAny(city) {
+  return getCachedPayloadAny(readKindergartensCache, city)
+}
+
 function putCachedKindergartens(city, points) {
   if (!Array.isArray(points) || points.length === 0) return
   const cache = readKindergartensCache()
@@ -940,9 +983,13 @@ function ClickHandler({
   kindergartensByCity,
   ensureKindergartensForCity
 }) {
+  const clickRequestRef = useRef(0)
+
   useMapEvents({
     async click(e) {
       const { lat, lng } = e.latlng
+      const clickId = clickRequestRef.current + 1
+      clickRequestRef.current = clickId
 
       let matched = ''
       let matchedBoundary = null
@@ -969,14 +1016,46 @@ function ClickHandler({
       let restaurantsOverride = null
       let pharmaciesOverride = null
       let kindergartensOverride = null
+      let shouldRefreshInBackground = false
       if (!snapped && matched && matchedBoundary) {
-        universitiesOverride = await ensureUniversitiesForCity(matched, matchedBoundary.polygon)
-        schoolsOverride = await ensureSchoolsForCity(matched, matchedBoundary.polygon)
-        clinicsOverride = await ensureClinicsForCity(matched, matchedBoundary.polygon)
-        postOfficesOverride = await ensurePostOfficesForCity(matched, matchedBoundary.polygon)
-        restaurantsOverride = await ensureRestaurantsForCity(matched, matchedBoundary.polygon)
-        pharmaciesOverride = await ensurePharmaciesForCity(matched, matchedBoundary.polygon)
-        kindergartensOverride = await ensureKindergartensForCity(matched, matchedBoundary.polygon)
+        const cityKey = normalizeCityName(matched)
+        const universitiesCachedAny = getCachedUniversitiesAny(cityKey)
+        const schoolsCachedAny = getCachedSchoolsAny(cityKey)
+        const clinicsCachedAny = getCachedClinicsAny(cityKey)
+        const postOfficesCachedAny = getCachedPostOfficesAny(cityKey)
+        const restaurantsCachedAny = getCachedRestaurantsAny(cityKey)
+        const pharmaciesCachedAny = getCachedPharmaciesAny(cityKey)
+        const kindergartensCachedAny = getCachedKindergartensAny(cityKey)
+
+        universitiesOverride = universitiesByCity[cityKey] || universitiesCachedAny.points
+        schoolsOverride = schoolsByCity[cityKey] || schoolsCachedAny.points
+        clinicsOverride = clinicsByCity[cityKey] || clinicsCachedAny.points
+        postOfficesOverride = postOfficesByCity[cityKey] || postOfficesCachedAny.points
+        restaurantsOverride = restaurantsByCity[cityKey] || restaurantsCachedAny.points
+        pharmaciesOverride = pharmaciesByCity[cityKey] || pharmaciesCachedAny.points
+        kindergartensOverride = kindergartensByCity[cityKey] || kindergartensCachedAny.points
+
+        const hasMissing = [
+          universitiesOverride,
+          schoolsOverride,
+          clinicsOverride,
+          postOfficesOverride,
+          restaurantsOverride,
+          pharmaciesOverride,
+          kindergartensOverride
+        ].some((points) => !Array.isArray(points) || points.length === 0)
+
+        const hasStale = [
+          universitiesCachedAny,
+          schoolsCachedAny,
+          clinicsCachedAny,
+          postOfficesCachedAny,
+          restaurantsCachedAny,
+          pharmaciesCachedAny,
+          kindergartensCachedAny
+        ].some((entry) => entry.exists && !entry.isFresh)
+
+        shouldRefreshInBackground = hasMissing || hasStale
       }
 
       const features = snapped
@@ -1035,8 +1114,84 @@ function ClickHandler({
         restaurantDistance: features.restaurantDistance,
         pharmacyDistance: features.pharmacyDistance,
         nearset_poi_distance: features.nearset_poi_distance,
-        poi_sum_distance: features.poi_sum_distance
+        poi_sum_distance: features.poi_sum_distance,
+        poiLoadingNotice: shouldRefreshInBackground ? POI_LOADING_NOTICE_PL : ''
       })
+
+      if (!snapped && matched && matchedBoundary && shouldRefreshInBackground) {
+        void (async () => {
+          try {
+            const universitiesRefreshed = await ensureUniversitiesForCity(matched, matchedBoundary.polygon, { forceRefresh: true })
+            const schoolsRefreshed = await ensureSchoolsForCity(matched, matchedBoundary.polygon, { forceRefresh: true })
+            const clinicsRefreshed = await ensureClinicsForCity(matched, matchedBoundary.polygon, { forceRefresh: true })
+            const postOfficesRefreshed = await ensurePostOfficesForCity(matched, matchedBoundary.polygon, { forceRefresh: true })
+            const restaurantsRefreshed = await ensureRestaurantsForCity(matched, matchedBoundary.polygon, { forceRefresh: true })
+            const pharmaciesRefreshed = await ensurePharmaciesForCity(matched, matchedBoundary.polygon, { forceRefresh: true })
+            const kindergartensRefreshed = await ensureKindergartensForCity(matched, matchedBoundary.polygon, { forceRefresh: true })
+
+            if (clickRequestRef.current !== clickId) return
+
+            const refreshedFeatures = estimateMapFeatures(
+              lat,
+              lng,
+              apartments,
+              matched,
+              cityCenterReferences,
+              universitiesByCity,
+              universitiesRefreshed,
+              schoolsByCity,
+              schoolsRefreshed,
+              clinicsByCity,
+              clinicsRefreshed,
+              postOfficesByCity,
+              postOfficesRefreshed,
+              restaurantsByCity,
+              restaurantsRefreshed,
+              pharmaciesByCity,
+              pharmaciesRefreshed,
+              kindergartensByCity,
+              kindergartensRefreshed
+            )
+
+            onMapClick({
+              lat,
+              lng,
+              city: matched,
+              centreDistance: refreshedFeatures.centreDistance,
+              poiCount: refreshedFeatures.poiCount,
+              collegeDistance: refreshedFeatures.collegeDistance,
+              schoolDistance: refreshedFeatures.schoolDistance,
+              clinicDistance: refreshedFeatures.clinicDistance,
+              postOfficeDistance: refreshedFeatures.postOfficeDistance,
+              kindergartenDistance: refreshedFeatures.kindergartenDistance,
+              restaurantDistance: refreshedFeatures.restaurantDistance,
+              pharmacyDistance: refreshedFeatures.pharmacyDistance,
+              nearset_poi_distance: refreshedFeatures.nearset_poi_distance,
+              poi_sum_distance: refreshedFeatures.poi_sum_distance,
+              poiLoadingNotice: ''
+            })
+          } catch (_error) {
+            if (clickRequestRef.current !== clickId) return
+            onMapClick({
+              lat,
+              lng,
+              city: matched,
+              centreDistance: features.centreDistance,
+              poiCount: features.poiCount,
+              collegeDistance: features.collegeDistance,
+              schoolDistance: features.schoolDistance,
+              clinicDistance: features.clinicDistance,
+              postOfficeDistance: features.postOfficeDistance,
+              kindergartenDistance: features.kindergartenDistance,
+              restaurantDistance: features.restaurantDistance,
+              pharmacyDistance: features.pharmacyDistance,
+              nearset_poi_distance: features.nearset_poi_distance,
+              poi_sum_distance: features.poi_sum_distance,
+              poiLoadingNotice: ''
+            })
+          }
+        })()
+      }
     }
   })
   return null

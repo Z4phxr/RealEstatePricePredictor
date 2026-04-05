@@ -9,7 +9,7 @@ function setApartmentType(setForm, key) {
   }))
 }
 
-export default function Sidebar({ form, setForm, onPredict, toggleOpen, isPredicting = false, predictionError = '', predictionResult = null }) {
+export default function Sidebar({ form, setForm, onPredict, toggleOpen, isPredicting = false, predictionError = '', predictionResult = null, poiLoadingNotice = '' }) {
   const roomsPerM2 = form.squareMeters > 0 ? (form.rooms / form.squareMeters).toFixed(6) : '0'
 
   return (
@@ -196,6 +196,11 @@ export default function Sidebar({ form, setForm, onPredict, toggleOpen, isPredic
         {predictionError && (
           <div className="mt-2 rounded border border-rose-200 bg-rose-50 p-2 text-xs text-rose-700">
             {predictionError}
+          </div>
+        )}
+        {poiLoadingNotice && (
+          <div className="mt-2 rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
+            {poiLoadingNotice}
           </div>
         )}
         {predictionResult && (

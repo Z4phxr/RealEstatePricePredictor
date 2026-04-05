@@ -61,6 +61,7 @@ function MapPage(){
   const [predictionResult, setPredictionResult] = useState(null)
   const [predictionError, setPredictionError] = useState('')
   const [isPredicting, setIsPredicting] = useState(false)
+    const [poiLoadingNotice, setPoiLoadingNotice] = useState('')
 
   function handleMapClick(payload){
     if (!payload) return
@@ -72,7 +73,8 @@ function MapPage(){
       if (!matchedCity) {
         setOpen(false)
         setSelectedPoint(null)
-        return
+          setPoiLoadingNotice('')
+          return
       }
 
       setSelectedPoint({ lat, lng })
@@ -81,18 +83,19 @@ function MapPage(){
         latitude: lat.toFixed(6),
         longitude: lng.toFixed(6),
         city: matchedCity,
-        centreDistance: payload.centreDistance,
-        poiCount: payload.poiCount,
-        collegeDistance: payload.collegeDistance,
-        schoolDistance: payload.schoolDistance,
-        clinicDistance: payload.clinicDistance,
-        postOfficeDistance: payload.postOfficeDistance,
-        kindergartenDistance: payload.kindergartenDistance,
-        restaurantDistance: payload.restaurantDistance,
-        pharmacyDistance: payload.pharmacyDistance,
-        nearset_poi_distance: payload.nearset_poi_distance,
-        poi_sum_distance: payload.poi_sum_distance
+          centreDistance: payload.centreDistance ?? f.centreDistance,
+          poiCount: payload.poiCount ?? f.poiCount,
+          collegeDistance: payload.collegeDistance ?? f.collegeDistance,
+          schoolDistance: payload.schoolDistance ?? f.schoolDistance,
+          clinicDistance: payload.clinicDistance ?? f.clinicDistance,
+          postOfficeDistance: payload.postOfficeDistance ?? f.postOfficeDistance,
+          kindergartenDistance: payload.kindergartenDistance ?? f.kindergartenDistance,
+          restaurantDistance: payload.restaurantDistance ?? f.restaurantDistance,
+          pharmacyDistance: payload.pharmacyDistance ?? f.pharmacyDistance,
+          nearset_poi_distance: payload.nearset_poi_distance ?? f.nearset_poi_distance,
+          poi_sum_distance: payload.poi_sum_distance ?? f.poi_sum_distance
       }))
+        setPoiLoadingNotice(payload.poiLoadingNotice || '')
       setOpen(true)
     }
     
@@ -110,6 +113,7 @@ function MapPage(){
       longitude: apartment.longitude,
       city: matchedCity
     }))
+      setPoiLoadingNotice('')
       setOpen(false)
   }
   
@@ -328,6 +332,7 @@ function MapPage(){
               isPredicting={isPredicting}
               predictionError={predictionError}
               predictionResult={predictionResult}
+                poiLoadingNotice={poiLoadingNotice}
             />
           </div>
         </div>
